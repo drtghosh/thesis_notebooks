@@ -217,5 +217,5 @@ class ResDeepBlock(nn.Module):
             x = self.layers[i](x)
         # pass through last layer to get output (no activation on the last layer)
         out = self.layers[len(self.layers)-1](x)
-        
+
         return out
