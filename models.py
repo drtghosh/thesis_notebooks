@@ -4,13 +4,13 @@ import torch.nn as nn
 
 class MLPBlock(nn.Module):
     """
-    Class of Multi-Layer Perceptron which doesn't grow (the number of hidden nodes in each layer is same)
-    Initialization Parameters:
-     - h_nodes: number of hidden nodes for each layer
-     - num_layers: number of internal layers in the MLP
-     - in_dim: input dimension of data
-     - out_dim: dimension of the resulting output
-     - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
+        Class of Multi-Layer Perceptron which doesn't grow (the number of hidden nodes in each layer is same)
+        Initialization Parameters:
+         - h_nodes: number of hidden nodes for each layer
+         - num_layers: number of internal layers in the MLP
+         - in_dim: input dimension of data
+         - out_dim: dimension of the resulting output
+         - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
     """
     def __init__(self, h_nodes=64, num_layers=2, in_dim=1, out_dim=1, nonlinear_layer=nn.ReLU()):
         super(MLPBlock, self).__init__()
@@ -45,15 +45,15 @@ class MLPBlock(nn.Module):
 
 class MLPGrow(nn.Module):
     """
-    Class of Multi-Layer Perceptron which grows by a multiplier
-    (the number of hidden nodes in each layer grows exponentially)
-    Initialization Parameters:
-     - h_nodes: number of hidden nodes for first internal layer
-     - num_layers: number of internal layers in the MLP
-     - multiplier: the factor by which the number of hidden nodes grows
-     - in_dim: input dimension of data
-     - out_dim: dimension of the resulting output
-     - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
+        Class of Multi-Layer Perceptron which grows by a multiplier
+        (the number of hidden nodes in each layer grows exponentially)
+        Initialization Parameters:
+         - h_nodes: number of hidden nodes for first internal layer
+         - num_layers: number of internal layers in the MLP
+         - multiplier: the factor by which the number of hidden nodes grows
+         - in_dim: input dimension of data
+         - out_dim: dimension of the resulting output
+         - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
     """
     def __init__(self, h_nodes=64, num_layers=2, multiplier=2, in_dim=1, out_dim=1, nonlinear_layer=nn.ReLU()):
         super(MLPGrow, self).__init__()
@@ -91,13 +91,13 @@ class MLPGrow(nn.Module):
 
 class CovNet(nn.Module):
     """
-    Network to compute the covariance between two points
-    Initialization Parameters:
-     - h_nodes: number of hidden nodes for each layer
-     - num_layers: number of internal layers in the MLP
-     - in_dim: input dimension of data
-     - out_dim: dimension of the resulting output
-     - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
+        Network to compute the covariance between two points
+        Initialization Parameters:
+         - h_nodes: number of hidden nodes for each layer
+         - num_layers: number of internal layers in the MLP
+         - in_dim: input dimension of data
+         - out_dim: dimension of the resulting output
+         - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
     """
     def __init__(self, h_nodes=64, num_layers=2, in_dim=1, out_dim=1, nonlinear_layer=nn.ReLU()):
         super(CovNet, self).__init__()
@@ -151,7 +151,7 @@ class ResBlock(nn.Module):
          - h_nodes: number of hidden nodes for each layer
          - block_length: number of layers after which residual connection is added
          - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
-        """
+    """
     def __init__(self, h_nodes=64, block_length=2, nonlinear_layer=torch.nn.ReLU()):
         super(ResBlock, self).__init__()
         self.h_nodes = h_nodes
@@ -188,7 +188,7 @@ class ResDeepBlock(nn.Module):
          - in_dim: input dimension of data
          - out_dim: dimension of the resulting output
          - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
-        """
+    """
     def __init__(self, h_nodes=64, num_blocks=2, block_length=2, in_dim=1, out_dim=1, nonlinear_layer=nn.ReLU()):
         super(ResDeepBlock, self).__init__()
         self.h_nodes = h_nodes
@@ -219,3 +219,125 @@ class ResDeepBlock(nn.Module):
         out = self.layers[len(self.layers)-1](x)
 
         return out
+
+
+class TNet(nn.Module):
+     """
+        For learning a Transformation matrix with a specified dimension
+     """
+    def __init__(self, dim, num_points):
+        super(TNet, self).__init__()
+
+        # dimensions for transformation matrix
+        self.dim = dim
+
+        self.conv1 = nn.Conv1d(dim, 64, kernel_size=1)
+        self.conv2 = nn.Conv1d(64, 128, kernel_size=1)
+        self.conv3 = nn.Conv1d(128, 1024, kernel_size=1)
+
+        self.linear1 = nn.Linear(1024, 512)
+        self.linear2 = nn.Linear(512, 256)
+        self.linear3 = nn.Linear(256, dim ** 2)
+
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.bn5 = nn.BatchNorm1d(256)
+
+        self.max_pool = nn.MaxPool1d(kernel_size=num_points)
+
+    def forward(self, x):
+        bs = x.shape[0]
+
+        # forward through conv1d (shared MLP) layers
+        x = self.bn1(F.relu(self.conv1(x)))
+        x = self.bn2(F.relu(self.conv2(x)))
+        x = self.bn3(F.relu(self.conv3(x)))
+
+        # max pool over number of input points
+        x = self.max_pool(x).view(bs, -1)
+
+        # pass through fully connected (linear) layers
+        x = self.bn4(F.relu(self.linear1(x)))
+        x = self.bn5(F.relu(self.linear2(x)))
+        x = self.linear3(x)
+
+        # initialize identity matrix
+        iden = torch.eye(self.dim, requires_grad=True).repeat(bs, 1, 1)
+        if x.is_cuda:
+            iden = iden.cuda()
+
+        x = x.view(-1, self.dim, self.dim) + iden
+
+        return x
+
+
+class PointNetEncoder(nn.Module):
+    def __init__(self, input_points, input_dim, dim_global_feature):
+        ''' Initializers:
+                input_points - number of points in input point cloud
+                input_dim - dimension of input point space
+                dim_global_feature - dimension of Global Features for the main
+                                   Max Pooling layer
+            '''
+        super(PointNetEncoder, self).__init__()
+
+        self.input_points = input_points
+        self.input_dim = input_dim
+        self.dim_global_feature = dim_global_feature
+
+        # TNets
+        self.tnet_input = TNet(dim=input_dim, num_points=input_points)
+        self.tnet_inter = TNet(dim=64, num_points=input_points)
+
+        # conv1d (shared MLP) before feature transform
+        self.conv1 = nn.Conv1d(input_dim, 64, kernel_size=1)
+        self.conv2 = nn.Conv1d(64, 64, kernel_size=1)
+
+        # conv1d (shared MLP) after feature transform
+        self.conv3 = nn.Conv1d(64, 64, kernel_size=1)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=1)
+        self.conv5 = nn.Conv1d(128, self.dim_global_feature, kernel_size=1)
+
+        # batch norms for both shared MLPs
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.bn3 = nn.BatchNorm1d(64)
+        self.bn4 = nn.BatchNorm1d(128)
+        self.bn5 = nn.BatchNorm1d(self.dim_global_feature)
+
+        # max pool to get the global features
+        self.max_pool = nn.MaxPool1d(kernel_size=input_points, return_indices=True)
+
+    def forward(self, x):
+        # get batch size
+        bs = x.shape[0]
+
+        # pass through first Tnet to get transformation matrix
+        T_input = self.tnet_input(x)
+
+        # perform first transformation across each point in the batch
+        x = torch.bmm(x.transpose(2, 1), T_input).transpose(2, 1)
+
+        # pass through first 1d convnets
+        x = self.bn1(F.relu(self.conv1(x)))
+        x = self.bn2(F.relu(self.conv2(x)))
+
+        # compute feature transform
+        T_feature = self.tnet_inter(x)
+
+        # perform second transformation across each (64 dim) feature in the batch
+        x = torch.bmm(x.transpose(2, 1), T_feature).transpose(2, 1)
+
+        # pass through second set of 1d convnets
+        x = self.bn3(F.relu(self.conv3(x)))
+        x = self.bn4(F.relu(self.conv4(x)))
+        x = self.bn5(F.relu(self.conv5(x)))
+
+        # get global feature vector and critical indexes
+        global_features, critical_indexes = self.max_pool(x)
+        global_features = global_features.view(bs, -1)
+        critical_indexes = critical_indexes.view(bs, -1)
+
+        return global_features, critical_indexes, T_feature

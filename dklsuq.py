@@ -15,7 +15,7 @@ from .models import MLPGrow
 
 class DeepKernelSUQ:
     """
-    Class of Neural Shape Uncertainty Quantification conditioned on a given incomplete point cloud
+    Class of Deep Kernel Learning Shape Uncertainty Quantification conditioned on a given incomplete point cloud
     by minimizing the -ve log likelihood of the complete point cloud data estimate from the posterior
     of Gaussian Process!
     Initialization Parameters:
@@ -24,7 +24,7 @@ class DeepKernelSUQ:
      - partial_cloud: incomplete point cloud dataset
      - latent_dim: dimension of the generated latent code for partial point cloud
      - cov_layers: number of internal layers for the covariance network
-     - hidden_nodes: number of hidden nodes in the covariance network inner layers
+     - hidden_nodes: number of hidden nodes in the covariance network first inner layer
      - device: use 'cuda' if available
     """
     def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, latent_dim=1024, cov_layers=5, hidden_nodes=64, device=None):
