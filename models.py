@@ -33,10 +33,10 @@ class MLPBlock(nn.Module):
 
     def forward(self, x):
         # pass input through first layer
-        x = self.nonlin_layer(self.layers[0](x))
+        x = self.nonlinear_layer(self.layers[0](x))
         # pass through internal layers
         for i in range(1, self.num_layers):
-            x = self.nonlin_layer(self.layers[i](x))
+            x = self.nonlinear_layer(self.layers[i](x))
         # pass through last layer to get output (no activation on the last layer)
         out = self.layers[self.num_layers+1](x)
 
@@ -79,10 +79,10 @@ class MLPGrow(nn.Module):
 
     def forward(self, x):
         # pass input through first layer
-        x = self.nonlin_layer(self.layers[0](x))
+        x = self.nonlinear_layer(self.layers[0](x))
         # pass through internal layers
         for i in range(1, self.num_layers):
-            x = self.nonlin_layer(self.layers[i](x))
+            x = self.nonlinear_layer(self.layers[i](x))
         # pass through last layer to get output (no activation on the last layer)
         out = self.layers[self.num_layers+1](x)
 
@@ -211,7 +211,7 @@ class ResDeepBlock(nn.Module):
 
     def forward(self, x):
         # pass input through first layer
-        x = self.nonlin_layer(self.layers[0](x))
+        x = self.nonlinear_layer(self.layers[0](x))
         # pass through internal residual blocks
         for i in range(1, len(self.layers)-1):
             x = self.layers[i](x)
@@ -222,122 +222,135 @@ class ResDeepBlock(nn.Module):
 
 
 class TNet(nn.Module):
-     """
+    """
         For learning a Transformation matrix with a specified dimension
-     """
-    def __init__(self, dim, num_points):
+        to be used in PointNet architecture
+        Initialization Parameters:
+         - in_dim: dimension of the input point space
+         - h_nodes: number of hidden nodes for first shared layer
+         - multiplier: the factor by which the number of hidden nodes grows
+         - shared_layers: number of shared MLP layers (easier to use 1D convolution for sharing)
+         - linear_layers: number of fully connected layers at the end
+         - num_points: number of points in the input point cloud
+         - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
+    """
+    def __init__(self, in_dim=3, h_nodes=64, multiplier=2, shared_layers=3, linear_layers=3, num_points=1024, nonlinear_layer=nn.ReLU()):
         super(TNet, self).__init__()
+        self.in_dim = in_dim
+        self.h_nodes = h_nodes
+        self.multiplier = multiplier
+        self.shared_layers = shared_layers
+        self.linear_layers = linear_layers
+        self.num_points = num_points
+        self.nonlinear_layer = nonlinear_layer
 
-        # dimensions for transformation matrix
-        self.dim = dim
-
-        self.conv1 = nn.Conv1d(dim, 64, kernel_size=1)
-        self.conv2 = nn.Conv1d(64, 128, kernel_size=1)
-        self.conv3 = nn.Conv1d(128, 1024, kernel_size=1)
-
-        self.linear1 = nn.Linear(1024, 512)
-        self.linear2 = nn.Linear(512, 256)
-        self.linear3 = nn.Linear(256, dim ** 2)
-
-        self.bn1 = nn.BatchNorm1d(64)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(1024)
-        self.bn4 = nn.BatchNorm1d(512)
-        self.bn5 = nn.BatchNorm1d(256)
-
+        # creating the network layers
+        self.layers = nn.ModuleList()
+        self.bn_layers = nn.ModuleList()
+        # shared layers (1D convolutions)
+        self.layers.append(nn.Conv1d(in_dim, h_nodes, 1))
+        for i in range(1, shared_layers):
+            self.layers.append(nn.Conv1d(h_nodes*(multiplier**(i-1)), h_nodes*(multiplier**i), 1))
+            self.bn_layers.append(nn.BatchNorm1d(h_nodes*(multiplier**(i-1))))
+        # get the last layer hidden node count
+        self.final_width = h_nodes*(multiplier**(shared_layers-1))
+        self.bn_layers.append(nn.BatchNorm1d(self.final_width))
+        for j in range(linear_layers-1):
+            self.layers.append(nn.Linear(self.final_width//multiplier**j, self.final_width//multiplier**(j+1)))
+            self.bn_layers.append(nn.BatchNorm1d(self.final_width//multiplier**(j+1)))
+        self.final_width = self.final_width//multiplier**(linear_layers-1)
+        self.layers.append(nn.Linear(self.final_width, in_dim**2))
+        # max pooling of each point
         self.max_pool = nn.MaxPool1d(kernel_size=num_points)
-
-    def forward(self, x):
-        bs = x.shape[0]
-
-        # forward through conv1d (shared MLP) layers
-        x = self.bn1(F.relu(self.conv1(x)))
-        x = self.bn2(F.relu(self.conv2(x)))
-        x = self.bn3(F.relu(self.conv3(x)))
-
-        # max pool over number of input points
-        x = self.max_pool(x).view(bs, -1)
-
-        # pass through fully connected (linear) layers
-        x = self.bn4(F.relu(self.linear1(x)))
-        x = self.bn5(F.relu(self.linear2(x)))
-        x = self.linear3(x)
-
-        # initialize identity matrix
-        iden = torch.eye(self.dim, requires_grad=True).repeat(bs, 1, 1)
-        if x.is_cuda:
-            iden = iden.cuda()
-
-        x = x.view(-1, self.dim, self.dim) + iden
-
-        return x
-
-
-class PointNetEncoder(nn.Module):
-    def __init__(self, input_points, input_dim, dim_global_feature):
-        ''' Initializers:
-                input_points - number of points in input point cloud
-                input_dim - dimension of input point space
-                dim_global_feature - dimension of Global Features for the main
-                                   Max Pooling layer
-            '''
-        super(PointNetEncoder, self).__init__()
-
-        self.input_points = input_points
-        self.input_dim = input_dim
-        self.dim_global_feature = dim_global_feature
-
-        # TNets
-        self.tnet_input = TNet(dim=input_dim, num_points=input_points)
-        self.tnet_inter = TNet(dim=64, num_points=input_points)
-
-        # conv1d (shared MLP) before feature transform
-        self.conv1 = nn.Conv1d(input_dim, 64, kernel_size=1)
-        self.conv2 = nn.Conv1d(64, 64, kernel_size=1)
-
-        # conv1d (shared MLP) after feature transform
-        self.conv3 = nn.Conv1d(64, 64, kernel_size=1)
-        self.conv4 = nn.Conv1d(64, 128, kernel_size=1)
-        self.conv5 = nn.Conv1d(128, self.dim_global_feature, kernel_size=1)
-
-        # batch norms for both shared MLPs
-        self.bn1 = nn.BatchNorm1d(64)
-        self.bn2 = nn.BatchNorm1d(64)
-        self.bn3 = nn.BatchNorm1d(64)
-        self.bn4 = nn.BatchNorm1d(128)
-        self.bn5 = nn.BatchNorm1d(self.dim_global_feature)
-
-        # max pool to get the global features
-        self.max_pool = nn.MaxPool1d(kernel_size=input_points, return_indices=True)
 
     def forward(self, x):
         # get batch size
         bs = x.shape[0]
+        # forward through shared layers
+        for i in range(self.shared_layers):
+            x = self.bn_layers[i](self.nonlinear_layer(self.layers[i]))
+        # max pool over number of input points
+        x = self.max_pool(x).view(bs, -1)
+        # pass through fully connected (linear) layers
+        for j in range(self.linear_layers):
+            if j < self.linear_layers-1:
+                x = self.bn_layers[self.shared_layers+j](self.nonlinear_layer(self.layers[self.shared_layers+j](x)))
+            else:
+                x = self.layers[self.shared_layers+j](x)
+        # initialize identity matrix
+        iden = torch.eye(self.in_dim, requires_grad=True).repeat(bs, 1, 1)
+        if x.is_cuda:
+            iden = iden.cuda()
+        out = x.view(-1, self.in_dim, self.in_dim) + iden
 
+        return out
+
+
+class PointNetEncoder(nn.Module):
+    def __init__(self, in_points, in_dim, shared_before, feature_dim, shared_after, multiplier, global_feature_dim, nonlinear_layer=nn.ReLU()):
+        """
+            PointNet encoder for point cloud data
+            Initialization Parameters:
+             - in_points: number of input points in the point cloud
+             - in_dim: dimension of the input point space
+             - shared_before: number of shared layers before feature transform
+             - feature_dim: dimension of the feature space
+             - shared_after: number of shared layers after feature transform
+             - multiplier: the factor by which the number of hidden nodes grows
+             - global_feature_dim: dimension of the encoding
+             - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
+        """
+        super(PointNetEncoder, self).__init__()
+        self.in_points = in_points
+        self.in_dim = in_dim
+        self.shared_before = shared_before
+        self.feature_dim = feature_dim
+        self.shared_after = shared_after
+        self.multiplier = multiplier
+        self.global_feature_dim = global_feature_dim
+        self.nonlinear_layer = nonlinear_layer
+
+        # initialize TNets
+        self.tnet_input = TNet(in_dim=in_dim, num_points=in_points)
+        self.tnet_inter = TNet(in_dim=feature_dim, num_points=in_points)
+        # creating the network layers
+        self.layers = nn.ModuleList()
+        self.bn_layers = nn.ModuleList()
+        # shared layers (1D convolution) before feature transform
+        self.layers.append(nn.Conv1d(in_dim, feature_dim, 1))
+        self.bn_layers.append(nn.BatchNorm1d(feature_dim))
+        for i in range(1, shared_before):
+            self.layers.append(nn.Conv1d(feature_dim, feature_dim, 1))
+            self.bn_layers.append(nn.BatchNorm1d(feature_dim))
+        # shared layers (1D convolution) after feature transform
+        for j in range(shared_after-1):
+            self.layers.append(nn.Conv1d(feature_dim*(multiplier**j), feature_dim*(multiplier**(j+1)), 1))
+            self.bn_layers.append(nn.BatchNorm1d(feature_dim*(multiplier**(j+1))))
+        self.layers.append(nn.Conv1d(feature_dim*(multiplier**(self.shared_after-1)), global_feature_dim, 1))
+        self.bn_layers.append(global_feature_dim)
+        # max pooling of each point for the global features
+        self.max_pool = nn.MaxPool1d(kernel_size=in_points, return_indices=True)
+
+    def forward(self, x):
+        # get batch size
+        bs = x.shape[0]
         # pass through first Tnet to get transformation matrix
-        T_input = self.tnet_input(x)
-
+        t_input = self.tnet_input(x)
         # perform first transformation across each point in the batch
-        x = torch.bmm(x.transpose(2, 1), T_input).transpose(2, 1)
-
+        x = torch.bmm(x.transpose(2, 1), t_input).transpose(2, 1)
         # pass through first 1d convnets
-        x = self.bn1(F.relu(self.conv1(x)))
-        x = self.bn2(F.relu(self.conv2(x)))
-
+        for i in range(self.shared_before):
+            x = self.bn_layers[i](self.nonlinear_layer(self.layers[i](x)))
         # compute feature transform
-        T_feature = self.tnet_inter(x)
-
-        # perform second transformation across each (64 dim) feature in the batch
-        x = torch.bmm(x.transpose(2, 1), T_feature).transpose(2, 1)
-
+        t_feature = self.tnet_inter(x)
+        # perform second transformation across each feature in the batch
+        x = torch.bmm(x.transpose(2, 1), t_feature).transpose(2, 1)
         # pass through second set of 1d convnets
-        x = self.bn3(F.relu(self.conv3(x)))
-        x = self.bn4(F.relu(self.conv4(x)))
-        x = self.bn5(F.relu(self.conv5(x)))
-
+        for j in range(self.shared_after):
+            x = self.bn_layers[self.shared_before+j](self.nonlinear_layer(self.layers[self.shared_before+j](x)))
         # get global feature vector and critical indexes
         global_features, critical_indexes = self.max_pool(x)
         global_features = global_features.view(bs, -1)
         critical_indexes = critical_indexes.view(bs, -1)
 
-        return global_features, critical_indexes, T_feature
+        return global_features, critical_indexes, t_feature
