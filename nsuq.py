@@ -54,23 +54,26 @@ class NeuralSUQ:
             self.cov_network = CovNet(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(2*self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin)
         self.cov_network.to(device)
 
-    def set_data(self, point_cloud, partial_cloud):
+    def set_data(self, point_cloud, partial_cloud, partial_noise):
         assert point_cloud.shape[0] == partial_cloud.shape[0]
         assert point_cloud.shape[2] == partial_cloud.shape[2]
         assert point_cloud.shape[1] >= partial_cloud.shape[1]
         self.point_cloud = point_cloud
         self.space_dim = point_cloud.size(-1)
         self.partial_cloud = partial_cloud
+        self.partial_noise = partial_noise
         self.fpc_copy = torch.tensor(point_cloud, dtype=torch.float32, device=self.device)
         self.ppc_copy = torch.tensor(partial_cloud, dtype=torch.float32, device=self.device)
         self.fpc_repeated = torch.cat((self.fpc_copy, self.fpc_copy), dim=1).to(self.device)
 
-    def get_nll(self, x):
+    def get_posterior(self, x):
         full, partial = x[:, :self.point_cloud.shape[1], :], x[:, self.point_cloud.shape[1]:, :]
         # compute encoding in a batch
         encoding = self.encoder(partial)
         # collect batch size
         bs = x.size(0)
+        # create empty list to store multivariate normals
+        posterior_nlls = torch.empty((bs, self.point_cloud.shape[1]))
         # compute point cloud possible combinations
         c = torch.combinations(torch.arange(x.size(1)), r=2, with_replacement=True)
         # repeat data for filtering
@@ -85,4 +88,14 @@ class NeuralSUQ:
             cov_entries = self.cov_network(cov_x)
             cov_matrix[m, n] = cov_entries
             cov_matrix.T[m, n] = cov_entries
-            
+            kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
+            kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
+            kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            posterior_mean = kernel_pf.T @ torch.inverse(kernel_pp) @ self.partial_noise
+            posterior_var = kernel_ff - kernel_pf.T @ torch.inverse(kernel_pp) @ kernel_pf
+            posterior_nlls[i] = -torch.distributions.MultivariateNormal(posterior_mean, posterior_var).log_prob(full[i])
+
+        return posterior_nlls
+
+    def train(self, num_epochs = 20000, print_every = 1, save_path = None):
+
