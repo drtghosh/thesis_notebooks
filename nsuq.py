@@ -73,15 +73,20 @@ class NeuralSUQ:
         # self.fpc_copy = torch.tensor(point_cloud, dtype=torch.float32, device=self.device)
         # self.ppc_copy = torch.tensor(partial_cloud, dtype=torch.float32, device=self.device)
         # self.fpc_repeated = torch.cat((self.fpc_copy, self.fpc_copy), dim=1).to(self.device)
+        self.point_cloud.to(self.device)
+        self.partial_cloud.to(self.device)
+        self.partial_value.to(self.device)
 
     def get_posterior(self, x):
         full, partial = x[:, :self.point_cloud.shape[1], :], x[:, self.point_cloud.shape[1]:, :]
+        full = full.to(self.device)
+        partial = partial.to(self.device)
         # compute encoding in a batch
         encoding = self.encoder(partial)
         # collect batch size
         bs = x.size(0)
         # create empty list to store multivariate normals
-        posterior_nlls = torch.empty((bs, self.point_cloud.shape[1]))
+        posterior_nlls = torch.empty((bs, self.point_cloud.shape[1])).to(self.device)
         # compute point cloud possible combinations
         c = torch.combinations(torch.arange(x.size(1)), r=2, with_replacement=True)
         # repeat data for filtering
@@ -105,4 +110,18 @@ class NeuralSUQ:
 
         return posterior_nlls
 
-    # def train(self, num_epochs = 20000, print_every = 1, save_path = None):
+    def train(self, num_epochs=200, print_every=1, learning_rate=0.001, weight_decay=1e-5):
+        train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
+        optimizer = torch.optim.Adam([
+            {'params': self.encoder.parameters()},
+            {'params': self.cov_network.parameters()}
+        ], learning_rate, weight_decay=weight_decay)
+
+        for i in range(num_epochs):
+            optimizer.zero_grad()
+            output = self.get_posterior(train_x)
+            loss = torch.mean(output)
+            loss.backward()
+            optimizer.step()
+            if i % print_every == 0:
+                print("Epoch: %d, Loss: %f" % (i, loss.item()))
