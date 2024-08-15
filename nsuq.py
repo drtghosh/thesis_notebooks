@@ -125,3 +125,7 @@ class NeuralSUQ:
             optimizer.step()
             if i % print_every == 0:
                 print("Epoch: %d, Loss: %f" % (i, loss.item()))
+
+    # def predict(self, partial, points_to_predict):
+    # def create_grid(self, partial):
+        # find the bounding box for all dataset
