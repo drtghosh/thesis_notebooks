@@ -351,6 +351,6 @@ class PointNetEncoder(nn.Module):
         # get global feature vector and critical indexes
         global_features, critical_indexes = self.max_pool(x)
         global_features = global_features.view(bs, -1)
-        critical_indexes = critical_indexes.view(bs, -1)
+        # critical_indexes = critical_indexes.view(bs, -1)
 
-        return global_features, critical_indexes, t_feature
+        return global_features,  # critical_indexes, t_feature

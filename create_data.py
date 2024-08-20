@@ -92,10 +92,25 @@ class DumbCirc:
         return (dumbbell_samples, eye_samples,
                 dumbbell_samples[dumbbell_subsample_indices, :], eye_samples[eye_subsample_indices, :])
 
-    def create_dataset(self, instances=1000, ppu_choices=None, percent_choices=None, equal_size=False):
+    def subsample_eye(self, percent_to_keep=60, points_per_unit=100, equal_size=False):
+        dumbbell_samples, eye_samples = self.create_samples(points_per_unit, equal_size)
+        full_sample_size = eye_samples.size(0)
+        half_sample_size = full_sample_size / 2
+        throw = (100.0 - percent_to_keep) / 100.0
+        half_throw = half_sample_size * throw / 2
+        half_keep = half_sample_size * percent_to_keep / 200.0
+        subsample_indices_l = np.arange(half_throw, half_sample_size - half_throw, 1)
+        subsample_indices_r = np.concatenate(
+            (half_sample_size + np.arange(half_keep), np.arange(full_sample_size - half_keep, full_sample_size, 1)))
+        subsample_indices = np.concatenate((subsample_indices_l, subsample_indices_r))
+
+        return eye_samples[subsample_indices]
+
+    def create_dataset(self, train_instances=1000, test_instances=1, ppu_choices=None, percent_choices=None, equal_size=False):
         full_clouds = []
         partial_clouds = []
-        for i in range(instances):
+        partial_clouds_test = []
+        for i in range(train_instances):
             if ppu_choices is not None:
                 ppu = random.choice(ppu_choices)
             else:
@@ -110,4 +125,20 @@ class DumbCirc:
             full_clouds.append(es.numpy())
             partial_clouds.append(ess.numpy())
 
-        return full_clouds, partial_clouds
+        for j in range(test_instances):
+            partial_to_test = self.subsample_eye()
+            tm, tn = partial_to_test.shape
+            tm_new = tm
+            if tm > len(partial_clouds[0]):
+                tm_new = len(partial_clouds[0])
+                rand_test_idx = torch.randperm(tm)
+                test_subsample_indices = rand_test_idx[:tm_new]
+                partial_to_test = partial_to_test[test_subsample_indices]
+            else:
+                tm_needed = len(partial_clouds[0]) - tm
+                rand_needed_idx = torch.randperm(tm)
+                needed_indices = rand_needed_idx[:tm_needed]
+                partial_to_test = np.concatenate(partial_to_test, partial_to_test[needed_indices])
+            partial_clouds_test.append(partial_to_test)
+
+        return full_clouds, partial_clouds, partial_clouds_test

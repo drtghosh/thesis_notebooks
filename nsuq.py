@@ -29,7 +29,7 @@ class NeuralSUQ:
      - add_residual: boolean to decide whether to use residual blocks or not
      - device: use 'cuda' if available
     """
-    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, latent_dim=1024, cov_layers=5, hidden_nodes=256, add_residual=False, device=None):
+    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, test_partial=None, latent_dim=1024, cov_layers=5, hidden_nodes=256, add_residual=False, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.cov_layers = cov_layers
@@ -37,10 +37,11 @@ class NeuralSUQ:
         self.point_cloud = point_cloud
         self.partial_cloud = partial_cloud
         self.partial_value = partial_value
+        self.test_partial = test_partial
 
         # set point cloud data or assert that one of point cloud data and space dim is specified
         if point_cloud is not None:
-            self.set_data(point_cloud, partial_cloud)
+            self.set_training_data(point_cloud, partial_cloud)
         else:
             assert space_dim is not None
             self.space_dim = space_dim
@@ -56,7 +57,7 @@ class NeuralSUQ:
             self.cov_network = CovNet(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(2*self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin)
         self.cov_network.to(device)
 
-    def set_data(self, point_cloud, partial_cloud, partial_value=None, with_noise=False):
+    def set_training_data(self, point_cloud, partial_cloud, partial_value=None, with_noise=False):
         assert point_cloud.shape[0] == partial_cloud.shape[0]
         assert point_cloud.shape[2] == partial_cloud.shape[2]
         assert point_cloud.shape[1] >= partial_cloud.shape[1]
@@ -76,6 +77,10 @@ class NeuralSUQ:
         self.point_cloud.to(self.device)
         self.partial_cloud.to(self.device)
         self.partial_value.to(self.device)
+
+    def set_test_data(self, test_partial):
+        self.test_partial = test_partial
+        self.test_partial.to(self.device)
 
     def get_posterior(self, x):
         full, partial = x[:, :self.point_cloud.shape[1], :], x[:, self.point_cloud.shape[1]:, :]
@@ -127,5 +132,8 @@ class NeuralSUQ:
                 print("Epoch: %d, Loss: %f" % (i, loss.item()))
 
     # def predict(self, partial, points_to_predict):
-    # def create_grid(self, partial):
+    def create_grid(self):
         # find the bounding box for all dataset
+        test_x = torch.tensor(self.test_partial).to(self.device)
+        
+        
