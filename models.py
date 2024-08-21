@@ -268,7 +268,7 @@ class TNet(nn.Module):
         bs = x.shape[0]
         # forward through shared layers
         for i in range(self.shared_layers):
-            x = self.bn_layers[i](self.nonlinear_layer(self.layers[i]))
+            x = self.bn_layers[i](self.nonlinear_layer(self.layers[i](x)))
         # max pool over number of input points
         x = self.max_pool(x).view(bs, -1)
         # pass through fully connected (linear) layers
@@ -327,7 +327,7 @@ class PointNetEncoder(nn.Module):
             self.layers.append(nn.Conv1d(feature_dim*(multiplier**j), feature_dim*(multiplier**(j+1)), 1))
             self.bn_layers.append(nn.BatchNorm1d(feature_dim*(multiplier**(j+1))))
         self.layers.append(nn.Conv1d(feature_dim*(multiplier**(self.shared_after-1)), global_feature_dim, 1))
-        self.bn_layers.append(global_feature_dim)
+        self.bn_layers.append(nn.BatchNorm1d(global_feature_dim))
         # max pooling of each point for the global features
         self.max_pool = nn.MaxPool1d(kernel_size=in_points, return_indices=True)
 

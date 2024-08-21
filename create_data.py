@@ -104,7 +104,7 @@ class DumbCirc:
             (half_sample_size + np.arange(half_keep), np.arange(full_sample_size - half_keep, full_sample_size, 1)))
         subsample_indices = np.concatenate((subsample_indices_l, subsample_indices_r))
 
-        return eye_samples[subsample_indices]
+        return eye_samples[subsample_indices, :]
 
     def create_dataset(self, train_instances=1000, test_instances=1, ppu_choices=None, percent_choices=None, equal_size=False):
         full_clouds = []
@@ -133,12 +133,12 @@ class DumbCirc:
                 tm_new = len(partial_clouds[0])
                 rand_test_idx = torch.randperm(tm)
                 test_subsample_indices = rand_test_idx[:tm_new]
-                partial_to_test = partial_to_test[test_subsample_indices]
+                partial_to_test = partial_to_test[test_subsample_indices, :]
             else:
                 tm_needed = len(partial_clouds[0]) - tm
                 rand_needed_idx = torch.randperm(tm)
                 needed_indices = rand_needed_idx[:tm_needed]
-                partial_to_test = np.concatenate(partial_to_test, partial_to_test[needed_indices])
-            partial_clouds_test.append(partial_to_test)
+                partial_to_test = np.concatenate(partial_to_test, partial_to_test[needed_indices, :])
+            partial_clouds_test.append(partial_to_test.numpy())
 
         return full_clouds, partial_clouds, partial_clouds_test

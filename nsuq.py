@@ -5,7 +5,7 @@ import torch.nn as nn
 # import sys
 # import os
 # import gpytoolbox
-from .models import CovNet, ResDeepBlock, PointNetEncoder
+from models import CovNet, ResDeepBlock, PointNetEncoder
 # from itertools import cycle
 # import matplotlib.pyplot as plt
 # import pickle
@@ -57,6 +57,12 @@ class NeuralSUQ:
             self.cov_network = CovNet(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(2*self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin)
         self.cov_network.to(device)
 
+    def set_device(self, device):
+        self.device = device
+        self.point_cloud.to(self.device)
+        self.partial_cloud.to(self.device)
+        self.partial_value.to(self.device)
+
     def set_training_data(self, point_cloud, partial_cloud, partial_value=None, with_noise=False):
         assert point_cloud.shape[0] == partial_cloud.shape[0]
         assert point_cloud.shape[2] == partial_cloud.shape[2]
@@ -74,9 +80,6 @@ class NeuralSUQ:
         # self.fpc_copy = torch.tensor(point_cloud, dtype=torch.float32, device=self.device)
         # self.ppc_copy = torch.tensor(partial_cloud, dtype=torch.float32, device=self.device)
         # self.fpc_repeated = torch.cat((self.fpc_copy, self.fpc_copy), dim=1).to(self.device)
-        self.point_cloud.to(self.device)
-        self.partial_cloud.to(self.device)
-        self.partial_value.to(self.device)
 
     def set_test_data(self, test_partial):
         self.test_partial = test_partial
@@ -135,5 +138,5 @@ class NeuralSUQ:
     def create_grid(self):
         # find the bounding box for all dataset
         test_x = torch.tensor(self.test_partial).to(self.device)
-        
+
         
