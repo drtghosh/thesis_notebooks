@@ -101,6 +101,7 @@ class NeuralSUQ:
         x_rep = x[:, None, :].expand(-1, len(c), -1, -1)
         # create data with encoding
         for i in range(bs):
+            print(f'cloud {i}')
             cov_x = torch.empty((len(c), 2*self.space_dim + self.latent_dim)).to(self.device)
             cov_matrix = torch.empty((x.size(1), x.size(1))).to(self.device)
             m, n = torch.triu_indices(x.size(1), x.size(1))
@@ -112,11 +113,14 @@ class NeuralSUQ:
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            print(self.partial_value[i].size())
             posterior_mean = kernel_pf.T @ torch.inverse(kernel_pp) @ self.partial_value.T.to(self.device)
             posterior_var = kernel_ff - kernel_pf.T @ torch.inverse(kernel_pp) @ kernel_pf
             # posterior_nlls[i] = -torch.distributions.MultivariateNormal(posterior_mean, posterior_var).log_prob(full[i])
-            posterior_nlls[i] = torch.mean(0.5 * (torch.log(torch.linalg.det(posterior_var)) +
-                                                  full[i].T @ torch.linalg.inv(posterior_var) @ full[i]))
+            print(full[i].size(), self.partial_value.size())
+            posterior_nlls[i] = torch.mean(0.5 * (torch.log(torch.linalg.det(posterior_var) + 1e-6) +
+                                                  (full[i] - posterior_mean).T @ torch.linalg.inv(posterior_var)
+                                                  @ (full[i]) - posterior_mean))
 
         return posterior_nlls.to(self.device)
 
@@ -128,6 +132,7 @@ class NeuralSUQ:
         ], learning_rate, weight_decay=weight_decay)
 
         for i in range(num_epochs):
+            print(f'Epoch {i}:')
             optimizer.zero_grad()
             output = self.get_posterior(train_x)
             print(output)
