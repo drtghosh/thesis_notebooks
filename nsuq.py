@@ -48,20 +48,20 @@ class NeuralSUQ:
 
         # initialize the encoder network
         self.encoder = PointNetEncoder(self.partial_cloud.shape[1], self.space_dim, 2, 64, 3, 2, 1024)
-        self.encoder.to(device)
 
         # initialize the covariance network
         if add_residual:
             self.cov_network = nn.Sequential(ResDeepBlock(h_nodes=hidden_nodes, in_dim=(2*self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin), nn.Softplus())
         else:
             self.cov_network = CovNet(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(2*self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin)
-        self.cov_network.to(device)
 
     def set_device(self, device):
         self.device = device
         self.point_cloud.to(self.device)
         self.partial_cloud.to(self.device)
         self.partial_value.to(self.device)
+        self.encoder.to(self.device)
+        self.cov_network.to(self.device)
 
     def set_training_data(self, point_cloud, partial_cloud, partial_value=None, with_noise=False):
         assert point_cloud.shape[0] == partial_cloud.shape[0]
@@ -90,7 +90,7 @@ class NeuralSUQ:
         full = full.to(self.device)
         partial = partial.to(self.device)
         # compute encoding in a batch
-        encoding = self.encoder(partial)
+        encoding = self.encoder(partial.transpose(1,2))
         # collect batch size
         bs = x.size(0)
         # create empty list to store multivariate normals
@@ -101,22 +101,24 @@ class NeuralSUQ:
         x_rep = x[:, None, :].expand(-1, len(c), -1, -1)
         # create data with encoding
         for i in range(bs):
-            cov_x = torch.empty((len(c), 2*self.space_dim + self.latent_dim))
-            cov_matrix = torch.empty((x.size(1), x.size(1)))
+            cov_x = torch.empty((len(c), 2*self.space_dim + self.latent_dim)).to(self.device)
+            cov_matrix = torch.empty((x.size(1), x.size(1))).to(self.device)
             m, n = torch.triu_indices(x.size(1), x.size(1))
             for j in range(len(c)):
                 cov_x[j] = torch.concat((x_rep[i][j][c[j]].flatten(), encoding[i]))
-            cov_entries = self.cov_network(cov_x)
+            cov_entries = self.cov_network(cov_x).flatten()
             cov_matrix[m, n] = cov_entries
             cov_matrix.T[m, n] = cov_entries
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
-            posterior_mean = kernel_pf.T @ torch.inverse(kernel_pp) @ self.partial_value
+            posterior_mean = kernel_pf.T @ torch.inverse(kernel_pp) @ self.partial_value.T.to(self.device)
             posterior_var = kernel_ff - kernel_pf.T @ torch.inverse(kernel_pp) @ kernel_pf
-            posterior_nlls[i] = -torch.distributions.MultivariateNormal(posterior_mean, posterior_var).log_prob(full[i])
+            # posterior_nlls[i] = -torch.distributions.MultivariateNormal(posterior_mean, posterior_var).log_prob(full[i])
+            posterior_nlls[i] = torch.mean(0.5 * (torch.log(torch.linalg.det(posterior_var)) +
+                                                  full[i].T @ torch.linalg.inv(posterior_var) @ full[i]))
 
-        return posterior_nlls
+        return posterior_nlls.to(self.device)
 
     def train(self, num_epochs=200, print_every=1, learning_rate=0.001, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
@@ -128,6 +130,7 @@ class NeuralSUQ:
         for i in range(num_epochs):
             optimizer.zero_grad()
             output = self.get_posterior(train_x)
+            print(output)
             loss = torch.mean(output)
             loss.backward()
             optimizer.step()
@@ -138,5 +141,6 @@ class NeuralSUQ:
     def create_grid(self):
         # find the bounding box for all dataset
         test_x = torch.tensor(self.test_partial).to(self.device)
+
 
         

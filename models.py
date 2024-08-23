@@ -127,7 +127,8 @@ class CovNet(nn.Module):
         # pass through last layer to get output (no activation on the last layer)
         x = self.layers[self.num_layers + 1](x)
         # enforce positivity on the output
-        out = nn.Softplus(x)
+        positive_nonlinear = nn.Softplus()
+        out = positive_nonlinear(x)
 
         return out
 
@@ -353,4 +354,4 @@ class PointNetEncoder(nn.Module):
         global_features = global_features.view(bs, -1)
         # critical_indexes = critical_indexes.view(bs, -1)
 
-        return global_features,  # critical_indexes, t_feature
+        return global_features  # critical_indexes, t_feature
