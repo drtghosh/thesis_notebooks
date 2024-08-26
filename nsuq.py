@@ -6,6 +6,8 @@ import torch.nn as nn
 # import os
 # import gpytoolbox
 from models import CovNet, ResDeepBlock, PointNetEncoder
+
+
 # from itertools import cycle
 # import matplotlib.pyplot as plt
 # import pickle
@@ -23,13 +25,17 @@ class NeuralSUQ:
      - point_cloud: complete point cloud dataset
      - partial_cloud: incomplete point cloud dataset
      - partial_value: distance value of the observed partial points
+     - noise present: boolean for whether noise is present in the partially observed data
+     - test_partial: test data of partial point cloud to predict on
      - latent_dim: dimension of the generated latent code for partial point cloud
      - cov_layers: number of internal layers for the covariance network
      - hidden_nodes: number of hidden nodes in the covariance network inner layers
      - add_residual: boolean to decide whether to use residual blocks or not
      - device: use 'cuda' if available
     """
-    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, noise_present=True, test_partial=None, latent_dim=1024, cov_layers=5, hidden_nodes=256, add_residual=False, device=None):
+
+    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, noise_present=True,
+                 test_partial=None, latent_dim=1024, cov_layers=5, hidden_nodes=256, add_residual=False, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.cov_layers = cov_layers
@@ -52,9 +58,13 @@ class NeuralSUQ:
 
         # initialize the covariance network
         if add_residual:
-            self.cov_network = nn.Sequential(ResDeepBlock(h_nodes=hidden_nodes, in_dim=(2*self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin), nn.Softplus())
+            self.cov_network = nn.Sequential(
+                ResDeepBlock(h_nodes=hidden_nodes, in_dim=(2 * self.space_dim + self.latent_dim), out_dim=1,
+                             nonlinear_layer=torch.sin), nn.Softplus())
         else:
-            self.cov_network = CovNet(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(2*self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin)
+            self.cov_network = CovNet(h_nodes=hidden_nodes, num_layers=cov_layers,
+                                      in_dim=(2 * self.space_dim + self.latent_dim), out_dim=1,
+                                      nonlinear_layer=torch.sin)
 
     def set_device(self, device):
         self.device = device
@@ -64,7 +74,7 @@ class NeuralSUQ:
         self.encoder.to(self.device)
         self.cov_network.to(self.device)
 
-    def set_training_data(self, point_cloud, partial_cloud, partial_value=None, with_noise=False):
+    def set_training_data(self, point_cloud, partial_cloud, partial_value=None):
         assert point_cloud.shape[0] == partial_cloud.shape[0]
         assert point_cloud.shape[2] == partial_cloud.shape[2]
         assert point_cloud.shape[1] >= partial_cloud.shape[1]
@@ -75,7 +85,7 @@ class NeuralSUQ:
             self.partial_value = partial_value
         else:
             if self.noise_present:
-                self.partial_value = 0.01*torch.randn(self.partial_cloud.size()[:-1])
+                self.partial_value = 0.01 * torch.randn(self.partial_cloud.size()[:-1])
             else:
                 self.partial_value = torch.zeros(self.partial_cloud.size()[:-1])
         # self.fpc_copy = torch.tensor(point_cloud, dtype=torch.float32, device=self.device)
@@ -87,11 +97,10 @@ class NeuralSUQ:
         self.test_partial.to(self.device)
 
     def get_posterior(self, x):
-        full, partial = x[:, :self.point_cloud.shape[1], :], x[:, self.point_cloud.shape[1]:, :]
-        full = full.to(self.device)
+        partial = x[:, self.point_cloud.shape[1]:, :]
         partial = partial.to(self.device)
         # compute encoding in a batch
-        encoding = self.encoder(partial.transpose(1,2))
+        encoding = self.encoder(partial.transpose(1, 2))
         # collect batch size
         bs = x.size(0)
         # create empty list to store multivariate normals
@@ -103,7 +112,7 @@ class NeuralSUQ:
         # create data with encoding
         for i in range(bs):
             # print(f'cloud {i}')
-            cov_x = torch.empty((len(c), 2*self.space_dim + self.latent_dim)).to(self.device)
+            cov_x = torch.empty((len(c), 2 * self.space_dim + self.latent_dim)).to(self.device)
             cov_matrix = torch.empty((x.size(1), x.size(1))).to(self.device)
             m, n = torch.triu_indices(x.size(1), x.size(1))
             for j in range(len(c)):
@@ -144,6 +153,3 @@ class NeuralSUQ:
     def create_grid(self):
         # find the bounding box for all dataset
         test_x = torch.tensor(self.test_partial).to(self.device)
-
-
-        
