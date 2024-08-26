@@ -29,7 +29,7 @@ class NeuralSUQ:
      - add_residual: boolean to decide whether to use residual blocks or not
      - device: use 'cuda' if available
     """
-    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, test_partial=None, latent_dim=1024, cov_layers=5, hidden_nodes=256, add_residual=False, device=None):
+    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, noise_present=True, test_partial=None, latent_dim=1024, cov_layers=5, hidden_nodes=256, add_residual=False, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.cov_layers = cov_layers
@@ -37,6 +37,7 @@ class NeuralSUQ:
         self.point_cloud = point_cloud
         self.partial_cloud = partial_cloud
         self.partial_value = partial_value
+        self.noise_present = noise_present
         self.test_partial = test_partial
 
         # set point cloud data or assert that one of point cloud data and space dim is specified
@@ -73,7 +74,7 @@ class NeuralSUQ:
         if partial_value is not None:
             self.partial_value = partial_value
         else:
-            if with_noise:
+            if self.noise_present:
                 self.partial_value = 0.01*torch.randn(self.partial_cloud.size()[:-1])
             else:
                 self.partial_value = torch.zeros(self.partial_cloud.size()[:-1])
@@ -94,14 +95,14 @@ class NeuralSUQ:
         # collect batch size
         bs = x.size(0)
         # create empty list to store multivariate normals
-        posterior_nlls = torch.empty((bs, self.point_cloud.shape[1])).to(self.device)
+        posterior_nlls = torch.empty(bs).to(self.device)
         # compute point cloud possible combinations
         c = torch.combinations(torch.arange(x.size(1)), r=2, with_replacement=True)
         # repeat data for filtering
         x_rep = x[:, None, :].expand(-1, len(c), -1, -1)
         # create data with encoding
         for i in range(bs):
-            print(f'cloud {i}')
+            # print(f'cloud {i}')
             cov_x = torch.empty((len(c), 2*self.space_dim + self.latent_dim)).to(self.device)
             cov_matrix = torch.empty((x.size(1), x.size(1))).to(self.device)
             m, n = torch.triu_indices(x.size(1), x.size(1))
@@ -114,13 +115,10 @@ class NeuralSUQ:
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
             posterior_mean = kernel_pf.T @ torch.inverse(kernel_pp) @ self.partial_value[i].to(self.device)
-            print(posterior_mean.size())
             posterior_var = kernel_ff - kernel_pf.T @ torch.inverse(kernel_pp) @ kernel_pf
             # posterior_nlls[i] = -torch.distributions.MultivariateNormal(posterior_mean, posterior_var).log_prob(full[i])
-            print(full[i].size(), self.partial_value[i].size())
-            posterior_nlls[i] = 0.5 * (torch.log(torch.linalg.det(posterior_var)) +
-                                       (self.partial_value[i] - posterior_mean).T @ torch.linalg.inv(posterior_var)
-                                       @ (self.partial_value[i]) - posterior_mean)
+            posterior_nlls[i] = 0.5 * (torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
+                                       + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
 
         return posterior_nlls.to(self.device)
 
@@ -132,10 +130,10 @@ class NeuralSUQ:
         ], learning_rate, weight_decay=weight_decay)
 
         for i in range(num_epochs):
-            print(f'Epoch {i}:')
+            # print(f'Epoch {i}:')
             optimizer.zero_grad()
             output = self.get_posterior(train_x)
-            print(output)
+            # print(output)
             loss = torch.mean(output)
             loss.backward()
             optimizer.step()
