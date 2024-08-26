@@ -113,14 +113,14 @@ class NeuralSUQ:
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
-            print(self.partial_value[i].size())
-            posterior_mean = kernel_pf.T @ torch.inverse(kernel_pp) @ self.partial_value.T.to(self.device)
+            posterior_mean = kernel_pf.T @ torch.inverse(kernel_pp) @ self.partial_value[i].to(self.device)
+            print(posterior_mean.size())
             posterior_var = kernel_ff - kernel_pf.T @ torch.inverse(kernel_pp) @ kernel_pf
             # posterior_nlls[i] = -torch.distributions.MultivariateNormal(posterior_mean, posterior_var).log_prob(full[i])
-            print(full[i].size(), self.partial_value.size())
-            posterior_nlls[i] = torch.mean(0.5 * (torch.log(torch.linalg.det(posterior_var) + 1e-6) +
-                                                  (full[i] - posterior_mean).T @ torch.linalg.inv(posterior_var)
-                                                  @ (full[i]) - posterior_mean))
+            print(full[i].size(), self.partial_value[i].size())
+            posterior_nlls[i] = 0.5 * (torch.log(torch.linalg.det(posterior_var)) +
+                                       (self.partial_value[i] - posterior_mean).T @ torch.linalg.inv(posterior_var)
+                                       @ (self.partial_value[i]) - posterior_mean)
 
         return posterior_nlls.to(self.device)
 
