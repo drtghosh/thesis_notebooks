@@ -81,7 +81,7 @@ class MLPGrow(nn.Module):
         # pass input through first layer
         x = self.nonlinear_layer(self.layers[0](x))
         # pass through internal layers
-        for i in range(1, self.num_layers):
+        for i in range(1, self.num_layers+1):
             x = self.nonlinear_layer(self.layers[i](x))
         # pass through last layer to get output (no activation on the last layer)
         out = self.layers[self.num_layers+1](x)

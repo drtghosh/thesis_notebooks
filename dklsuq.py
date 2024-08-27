@@ -35,9 +35,10 @@ class DeepKernelSUQ:
     """
 
     def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, noise_present=True,
-                 test_partial=None, latent_dim=1024, cov_layers=5, hidden_nodes=256, device=None):
+                 test_partial=None, latent_dim=1024, cov_layers=3, hidden_nodes=256, mapping_dim=2048, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
+        self.mapping_dim = mapping_dim
         self.cov_layers = cov_layers
         self.device = device
         self.point_cloud = point_cloud
@@ -57,7 +58,7 @@ class DeepKernelSUQ:
         self.encoder = PointNetEncoder(self.partial_cloud.shape[1], self.space_dim, 2, 64, 3, 2, 1024)
 
         # initialize the covariance network
-        self.cov_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(self.space_dim + self.latent_dim), out_dim=1, nonlinear_layer=torch.sin)
+        self.cov_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(self.space_dim + self.latent_dim), out_dim=mapping_dim)
 
     def set_device(self, device):
         self.device = device
@@ -105,7 +106,7 @@ class DeepKernelSUQ:
         for i in range(bs):
             # print(f'cloud {i}')
             mapped_cloud = self.cov_network(encoded_x[i])
-            print(mapped_cloud.size())
+            
 
         return posterior_nlls.to(self.device)
 
