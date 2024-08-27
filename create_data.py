@@ -87,9 +87,11 @@ class DumbCirc:
         rand_dumbbell_idx = torch.randperm(dm)
         rand_eye_idx = torch.randperm(em)
         dumbbell_subsample_indices = rand_dumbbell_idx[:num_dumbbell_subsample]
+        dumbbell_remaining_indices = rand_dumbbell_idx[num_dumbbell_subsample:]
         eye_subsample_indices = rand_eye_idx[:num_eye_subsample]
+        eye_remaining_indices = rand_eye_idx[num_eye_subsample:]
 
-        return (dumbbell_samples, eye_samples,
+        return (dumbbell_samples[dumbbell_remaining_indices, :], eye_samples[eye_remaining_indices, :],
                 dumbbell_samples[dumbbell_subsample_indices, :], eye_samples[eye_subsample_indices, :])
 
     def subsample_eye(self, percent_to_keep=60, points_per_unit=100, equal_size=False):

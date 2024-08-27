@@ -36,7 +36,7 @@ class DeepKernelSUQ:
     """
 
     def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, noise_present=True,
-                 test_partial=None, latent_dim=1024, cov_layers=3, hidden_nodes=256, mapping_dim=1024+32, device=None):
+                 test_partial=None, latent_dim=256, cov_layers=3, hidden_nodes=64, mapping_dim=256+256, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.mapping_dim = mapping_dim
@@ -56,7 +56,7 @@ class DeepKernelSUQ:
             self.space_dim = space_dim
 
         # initialize the encoder network
-        self.encoder = PointNetEncoder(self.partial_cloud.shape[1], self.space_dim, 2, 64, 3, 2, 1024)
+        self.encoder = PointNetEncoder(self.partial_cloud.shape[1], self.space_dim, 2, 64, 3, 2, self.latent_dim)
 
         # initialize the covariance network
         self.cov_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(self.space_dim + self.latent_dim), out_dim=mapping_dim)
@@ -117,7 +117,7 @@ class DeepKernelSUQ:
 
         return posterior_nlls.to(self.device)
 
-    def train(self, num_epochs=200, print_every=1, learning_rate=0.001, weight_decay=1e-5):
+    def train(self, num_epochs=2, print_every=1, learning_rate=0.0001, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
         optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
