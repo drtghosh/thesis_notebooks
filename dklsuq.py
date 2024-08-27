@@ -1,5 +1,6 @@
 # import numpy as np
 import torch
+import gpytorch
 # import torch.nn as nn
 # import time
 # import sys
@@ -35,7 +36,7 @@ class DeepKernelSUQ:
     """
 
     def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, noise_present=True,
-                 test_partial=None, latent_dim=1024, cov_layers=3, hidden_nodes=256, mapping_dim=2048, device=None):
+                 test_partial=None, latent_dim=1024, cov_layers=3, hidden_nodes=256, mapping_dim=1024+32, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.mapping_dim = mapping_dim
@@ -91,22 +92,28 @@ class DeepKernelSUQ:
         self.test_partial.to(self.device)
 
     def get_posterior(self, x):
-        full, partial = x[:, :self.point_cloud.shape[1], :], x[:, self.point_cloud.shape[1]:, :]
-        full = full.to(self.device)
+        partial = x[:, self.point_cloud.shape[1]:, :]
         partial = partial.to(self.device)
         # compute encoding in a batch
         encoding = self.encoder(partial.transpose(1, 2))
         # repeat encoding for each point in full point cloud
         encoded_x = torch.cat((x, encoding.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
-        print(encoded_x.size())
         # collect batch size
         bs = x.size(0)
-        # create empty list to store multivariate normals
+        # create empty list to store negative log-likelihoods of multivariate normals
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
             # print(f'cloud {i}')
             mapped_cloud = self.cov_network(encoded_x[i])
-            
+            covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1)))
+            cov_matrix = covar_module(mapped_cloud).evaluate_kernel().to_dense()
+            kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
+            kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
+            kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_pp) @ self.partial_value[i].to(self.device)
+            posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_pp) @ kernel_pf
+            posterior_nlls[i] = 0.5 * (torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
+                                       + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
 
         return posterior_nlls.to(self.device)
 
@@ -128,7 +135,27 @@ class DeepKernelSUQ:
             if i % print_every == 0:
                 print("Epoch: %d, Loss: %f" % (i, loss.item()))
 
-    # def predict(self, partial, points_to_predict):
+    def predict(self, partial, points_to_predict):
+        partial = partial.to(self.device)
+        # compute encoding in a batch
+        encoding = self.encoder(partial.transpose(1, 2))
+        # repeat encoding for each point in full point cloud
+        encoded_points = torch.cat((points_to_predict, encoding.unsqueeze(1).repeat(1, points_to_predict.size(1), 1)), 2)
+        # collect batch size
+        bs = points_to_predict.size(0)
+        # create empty list to store negative log-likelihoods of multivariate normals
+        posterior_nlls = torch.empty(bs).to(self.device)
+        for i in range(bs):
+            # print(f'cloud {i}')
+            mapped_cloud = self.cov_network(encoded_points[i])
+            covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1)))
+            cov_matrix = covar_module(mapped_cloud).evaluate_kernel().to_dense()
+            kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
+            kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
+            kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_pp) @ self.partial_value[i].to(self.device)
+            posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_pp) @ kernel_pf
+
     def create_grid(self):
         # find the bounding box for all dataset
         test_x = torch.tensor(self.test_partial).to(self.device)
