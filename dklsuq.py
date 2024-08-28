@@ -26,17 +26,18 @@ class DeepKernelSUQ:
      - point_cloud: complete point cloud dataset
      - partial_cloud: incomplete point cloud dataset
      - partial_value: distance value of the observed partial points
-     - noise present: boolean for whether noise is present in the partially observed data
+     - noise_present: boolean for whether noise is present in the partially observed data
+     - noise_var: amount of noise to be considered in case noise_present is True
      - test_partial: test data of partial point cloud to predict on
      - latent_dim: dimension of the generated latent code for partial point cloud
      - cov_layers: number of internal layers for the covariance network
      - hidden_nodes: number of hidden nodes in the covariance network inner layers
-     - add_residual: boolean to decide whether to use residual blocks or not
      - device: use 'cuda' if available
     """
 
     def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value=None, noise_present=True,
-                 test_partial=None, latent_dim=256, cov_layers=3, hidden_nodes=64, mapping_dim=256+256, device=None):
+                 noise_var=0.01, test_partial=None, latent_dim=256, cov_layers=3, hidden_nodes=64,
+                 mapping_dim=256+256, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.mapping_dim = mapping_dim
@@ -46,6 +47,8 @@ class DeepKernelSUQ:
         self.partial_cloud = partial_cloud
         self.partial_value = partial_value
         self.noise_present = noise_present
+        if noise_present:
+            self.noise_var = noise_var
         self.test_partial = test_partial
 
         # set point cloud data or assert that one of point cloud data and space dim is specified
@@ -59,7 +62,8 @@ class DeepKernelSUQ:
         self.encoder = PointNetEncoder(self.partial_cloud.shape[1], self.space_dim, 2, 64, 3, 2, self.latent_dim)
 
         # initialize the covariance network
-        self.cov_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=(self.space_dim + self.latent_dim), out_dim=mapping_dim)
+        new_in_dim = self.space_dim + self.latent_dim
+        self.cov_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=new_in_dim, out_dim=mapping_dim)
 
     def set_device(self, device):
         self.device = device
@@ -80,7 +84,7 @@ class DeepKernelSUQ:
             self.partial_value = partial_value
         else:
             if self.noise_present:
-                self.partial_value = 0.01 * torch.randn(self.partial_cloud.size()[:-1])
+                self.partial_value = self.noise_var * torch.randn(self.partial_cloud.size()[:-1])
             else:
                 self.partial_value = torch.zeros(self.partial_cloud.size()[:-1])
         # self.fpc_copy = torch.tensor(point_cloud, dtype=torch.float32, device=self.device)
@@ -91,7 +95,7 @@ class DeepKernelSUQ:
         self.test_partial = test_partial
         self.test_partial.to(self.device)
 
-    def get_posterior(self, x):
+    def get_posterior_diagonal(self, x):
         partial = x[:, self.point_cloud.shape[1]:, :]
         partial = partial.to(self.device)
         # compute encoding in a batch
@@ -110,14 +114,17 @@ class DeepKernelSUQ:
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
-            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_pp) @ self.partial_value[i].to(self.device)
-            posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_pp) @ kernel_pf
-            posterior_nlls[i] = 0.5 * (torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
-                                       + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
+            additional_noise = self.noise_var * torch.eye(self.partial_cloud.shape[1])
+            kernel_with_noise = kernel_pp + additional_noise
+            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ self.partial_value[i].to(self.device)
+            posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
+            posterior_diag = torch.diag(torch.diagonal(posterior_var, 0))
+            posterior_nlls[i] = 0.5 * (torch.log(torch.linalg.det(posterior_diag) + 1e-6) - torch.log(torch.tensor(1e-6))
+                                       + posterior_mean.T @ torch.linalg.inv(posterior_diag) @ posterior_mean)
 
         return posterior_nlls.to(self.device)
 
-    def train(self, num_epochs=2, print_every=1, learning_rate=0.0001, weight_decay=1e-5):
+    def train_diagonal(self, num_epochs=200, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
         optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
@@ -127,7 +134,7 @@ class DeepKernelSUQ:
         for i in range(num_epochs):
             # print(f'Epoch {i}:')
             optimizer.zero_grad()
-            output = self.get_posterior(train_x)
+            output = self.get_posterior_diagonal(train_x)
             # print(output)
             loss = torch.mean(output)
             loss.backward()
