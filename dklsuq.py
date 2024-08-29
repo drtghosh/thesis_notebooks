@@ -1,6 +1,9 @@
 # import numpy as np
 import torch
 import gpytorch
+import numpy as np
+from scipy.stats import norm
+import matplotlib.pyplot as plt
 # import torch.nn as nn
 # import time
 # import sys
@@ -37,11 +40,12 @@ class DeepKernelSUQ:
 
     def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value_train=None, noise_present=True,
                  noise_var=0.01, test_partial=None, partial_value_test=None, latent_dim=256, cov_layers=3,
-                 hidden_nodes=64, mapping_dim=256+256, device=None):
+                 hidden_nodes=64, mapping_dim=256+256, grid_size=100, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.mapping_dim = mapping_dim
         self.cov_layers = cov_layers
+        self.grid_sizes = np.ones(self.space_dim, dtype=np.int32)*grid_size
         self.device = device
         self.point_cloud = point_cloud
         self.partial_cloud = partial_cloud
@@ -134,7 +138,7 @@ class DeepKernelSUQ:
 
         return posterior_nlls.to(self.device)
 
-    def train_diagonal(self, num_epochs=200, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
+    def train_diagonal(self, num_epochs=20, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
         optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
@@ -152,14 +156,25 @@ class DeepKernelSUQ:
             if i % print_every == 0:
                 print("Epoch: %d, Loss: %f" % (i, loss.item()))
 
-    def predict(self, points_to_predict):
+    def predict(self, points_to_predict=None):
+        # collect partial data
         partial = self.test_partial.to(self.device)
+        # check or create points to predict on
+        if points_to_predict is None:
+            points_to_predict = self.create_grid()
+        # combine all data
+        test_x = torch.cat((points_to_predict.repeat(self.test_partial.size(0), 1, 1), self.test_partial), 1).to(
+            self.device)
+        # set the encoder to evaluation mode
+        self.encoder.eval()
         # compute encoding in a batch
         encoding = self.encoder(partial.transpose(1, 2))
         # repeat encoding for each point in full point cloud
-        encoded_points = torch.cat((points_to_predict, encoding.unsqueeze(1).repeat(1, points_to_predict.size(1), 1)), 2)
+        encoded_points = torch.cat((test_x, encoding.unsqueeze(1).repeat(1, test_x.size(1), 1)), 2)
+        # set the covariance network to evaluation
+        self.cov_network.eval()
         # collect batch size
-        bs = points_to_predict.size(0)
+        bs = self.test_partial.size(0)
         # create empty list to store negative log-likelihoods of multivariate normals
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
@@ -167,18 +182,43 @@ class DeepKernelSUQ:
             mapped_cloud = self.cov_network(encoded_points[i])
             covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1)))
             cov_matrix = covar_module(mapped_cloud).evaluate_kernel().to_dense()
-            kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
-            kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
-            kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            kernel_ff = cov_matrix[:points_to_predict.size(0), :points_to_predict.size(0)]
+            kernel_pf = cov_matrix[points_to_predict.size(0):, :points_to_predict.size(0)]
+            kernel_pp = cov_matrix[points_to_predict.size(0):, points_to_predict.size(0):]
             additional_noise = self.noise_var * torch.eye(partial.shape[1])
             kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
             posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ self.partial_value_test[i]
             posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
-            posterior_diag = torch.diag(torch.diagonal(posterior_var, 0))
-            posterior_nlls[i] = 0.5 * (
-                        torch.log(torch.linalg.det(posterior_diag) + 1e-6) - torch.log(torch.tensor(1e-6))
-                        + posterior_mean.T @ torch.linalg.inv(posterior_diag) @ posterior_mean)
+            posterior_diag = torch.diagonal(posterior_var, 0)
+            # posterior_nlls[i] = 0.5 * (
+            #            torch.log(torch.linalg.det(posterior_diag) + 1e-6) - torch.log(torch.tensor(1e-6))
+            #            + posterior_mean.T @ torch.linalg.inv(posterior_diag) @ posterior_mean)
+            with torch.no_grad():
+                prob_on_surface = norm.pdf(np.zeros(posterior_mean.shape), loc=posterior_mean.cpu().detach().numpy(),
+                                           scale=np.sqrt(posterior_diag).cpu().detach().numpy())
+            gp = points_to_predict.cpu().numpy()
+            gp_x = gp[:, 0].reshape(self.grid_sizes)
+            gp_y = gp[:, 1].reshape(self.grid_sizes)
+            gp_prob = prob_on_surface.reshape(self.grid_sizes)
 
-    def create_grid(self):
+            fig = plt.figure(figsize=(11, 4))
+            ax = fig.add_subplot(111)
+            plot = ax.pcolormesh(gp_x, gp_y, gp_prob, shading='gouraud', cmap='Greys')
+            ax.scatter(self.test_partial[i].cpu().numpy()[:, 0], self.test_partial[i].cpu().numpy()[:, 1], c='r', s=0.5)
+            fig.colorbar(plot)
+            ax.axis('equal')
+            ax.set_title(f'Probability of being on the surface')
+
+    def create_grid(self, box_min=None, box_max=None):
         # find the bounding box for all dataset
-        test_x = torch.tensor(self.test_partial).to(self.device)
+        if box_min is None:
+            box_min = torch.amin(self.test_partial,  (1, 0))
+        if box_max is None:
+            box_max = torch.amax(self.test_partial,  (1, 0))
+
+        # Build a grid (dimension-agnostic)
+        grid_vertices = np.meshgrid(
+            *[np.linspace(box_min[d], box_max[d], self.grid_sizes[d]) for d in range(self.space_dim)])
+        grid_vertices = np.stack(grid_vertices, axis=-1).reshape(-1, self.space_dim)
+        grid_vertices = torch.tensor(grid_vertices, dtype=torch.float32)
+        return grid_vertices
