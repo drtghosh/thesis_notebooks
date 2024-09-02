@@ -209,12 +209,12 @@ class DeepKernelSUQ:
             ax.axis('equal')
             ax.set_title(f'Probability of being on the surface')
 
-    def create_grid(self, box_min=None, box_max=None):
+    def create_grid(self, box_min=None, box_max=None, eps=0.1):
         # find the bounding box for all dataset
         if box_min is None:
-            box_min = torch.amin(self.test_partial,  (1, 0))
+            box_min = torch.amin(self.test_partial,  (1, 0))-eps
         if box_max is None:
-            box_max = torch.amax(self.test_partial,  (1, 0))
+            box_max = torch.amax(self.test_partial,  (1, 0))+eps
 
         # Build a grid (dimension-agnostic)
         grid_vertices = np.meshgrid(
