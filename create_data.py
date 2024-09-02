@@ -94,7 +94,7 @@ class DumbCirc:
         return (dumbbell_samples[dumbbell_remaining_indices, :], eye_samples[eye_remaining_indices, :],
                 dumbbell_samples[dumbbell_subsample_indices, :], eye_samples[eye_subsample_indices, :])
 
-    def subsample_eye(self, percent_to_keep=60, points_per_unit=100, equal_size=False):
+    def subsample_eye_side(self, percent_to_keep=60, points_per_unit=100, equal_size=False):
         dumbbell_samples, eye_samples = self.create_samples(points_per_unit, equal_size)
         full_sample_size = eye_samples.size(0)
         half_sample_size = full_sample_size / 2
@@ -128,7 +128,7 @@ class DumbCirc:
             partial_clouds.append(ess.numpy())
 
         for j in range(test_instances):
-            partial_to_test = self.subsample_eye()
+            partial_to_test = self.subsample_eye_side()
             tm, tn = partial_to_test.shape
             tm_new = tm
             if tm > len(partial_clouds[0]):
