@@ -108,7 +108,7 @@ class DeepKernelSUQ:
         self.test_partial.to(self.device)
         self.partial_value_test.to(self.device)
 
-    def get_posterior_diagonal(self, x):
+    def get_posterior_diagonal(self, x, y):
         partial = x[:, self.point_cloud.shape[1]:, :]
         partial = partial.to(self.device)
         # compute encoding in a batch
@@ -129,7 +129,7 @@ class DeepKernelSUQ:
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
             additional_noise = self.noise_var * torch.eye(self.partial_cloud.shape[1])
             kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
-            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ self.partial_value_train[i]
+            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
             posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
             posterior_diag = torch.diag(torch.diagonal(posterior_var, 0))
             posterior_nlls[i] = 0.5 * (
@@ -138,7 +138,7 @@ class DeepKernelSUQ:
 
         return posterior_nlls.to(self.device)
 
-    def get_posterior_cholesky(self, x):
+    def get_posterior_cholesky(self, x, y):
         partial = x[:, self.point_cloud.shape[1]:, :]
         partial = partial.to(self.device)
         # compute encoding in a batch
@@ -159,7 +159,7 @@ class DeepKernelSUQ:
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
             additional_noise = self.noise_var * torch.eye(self.partial_cloud.shape[1])
             kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
-            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ self.partial_value_train[i]
+            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
             posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
             posterior_cholesky_upper, info = torch.linalg.cholesky_ex(posterior_var, upper=True)
             posterior_cholesky = posterior_cholesky_upper.T @ posterior_cholesky_upper
@@ -169,41 +169,61 @@ class DeepKernelSUQ:
 
         return posterior_nlls.to(self.device)
 
-    def train_diagonal(self, num_epochs=20, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
+    def train_diagonal(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
+        num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
             {'params': self.cov_network.parameters()}
         ], learning_rate, weight_decay=weight_decay)
 
+        training_loss = 0
         for i in range(num_epochs):
-            # print(f'Epoch {i}:')
-            optimizer.zero_grad()
-            output = self.get_posterior_diagonal(train_x)
-            # print(output)
-            loss = torch.mean(output)
-            loss.backward()
-            optimizer.step()
+            for j in range(num_batches):
+                if j < num_batches-1:
+                    x = train_x[j*batch_size: (j+1)*batch_size]
+                    y = self.partial_value_train[j*batch_size: (j+1)*batch_size]
+                else:
+                    x = train_x[(num_batches-1)*batch_size:]
+                    y = self.partial_value_train[(num_batches-1)*batch_size:]
+                optimizer.zero_grad()
+                output = self.get_posterior_diagonal(x, y)
+                # print(output)
+                loss = torch.mean(output)
+                loss.backward()
+                optimizer.step()
+                training_loss += loss.item()
+            training_loss /= num_batches
             if i % print_every == 0:
-                print("Epoch: %d, Loss: %f" % (i, loss.item()))
+                print(f"Epoch:{i}, Loss: {training_loss}")
 
-    def train_cholesky(self, num_epochs=20, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
+    def train_cholesky(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
+        num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.Adam([
             {'params': self.encoder.parameters()},
             {'params': self.cov_network.parameters()}
         ], learning_rate, weight_decay=weight_decay)
 
+        training_loss = 0
         for i in range(num_epochs):
-            # print(f'Epoch {i}:')
-            optimizer.zero_grad()
-            output = self.get_posterior_cholesky(train_x)
-            # print(output)
-            loss = torch.mean(output)
-            loss.backward()
-            optimizer.step()
+            for j in range(num_batches):
+                if j < num_batches - 1:
+                    x = train_x[j * batch_size: (j + 1) * batch_size]
+                    y = self.partial_value_train[j * batch_size: (j + 1) * batch_size]
+                else:
+                    x = train_x[(num_batches - 1) * batch_size:]
+                    y = self.partial_value_train[(num_batches - 1) * batch_size:]
+                optimizer.zero_grad()
+                output = self.get_posterior_cholesky(x, y)
+                # print(output)
+                loss = torch.mean(output)
+                loss.backward()
+                optimizer.step()
+                training_loss += loss.item()
+            training_loss /= num_batches
             if i % print_every == 0:
-                print("Epoch: %d, Loss: %f" % (i, loss.item()))
+                print(f"Epoch:{i}, Loss: {training_loss}")
 
     def predict(self, points_to_predict=None):
         # collect partial data

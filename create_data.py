@@ -1,4 +1,6 @@
 import random
+
+import numpy
 import torch
 import numpy as np
 from scipy.spatial import distance
@@ -143,4 +145,4 @@ class DumbCirc:
                 partial_to_test = np.concatenate(partial_to_test, partial_to_test[needed_indices, :])
             partial_clouds_test.append(partial_to_test.numpy())
 
-        return full_clouds, partial_clouds, partial_clouds_test
+        return np.array(full_clouds), np.array(partial_clouds), np.array(partial_clouds_test)
