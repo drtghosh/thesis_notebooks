@@ -171,6 +171,40 @@ class DeepKernelSUQ:
 
         return posterior_nlls.to(self.device)
 
+    def get_posterior_cholesky_plus_noise(self, x, y):
+        partial = x[:, self.point_cloud.shape[1]:, :]
+        partial = partial.to(self.device)
+        # compute encoding in a batch
+        encoding = self.encoder(partial.transpose(1, 2))
+        # repeat encoding for each point in full point cloud
+        encoded_x = torch.cat((x, encoding.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
+        # collect batch size
+        bs = x.size(0)
+        # create empty list to store negative log-likelihoods of multivariate normals
+        posterior_nlls = torch.empty(bs).to(self.device)
+        for i in range(bs):
+            # print(f'cloud {i}')
+            mapped_cloud = self.cov_network(encoded_x[i])
+            covar_module = gpytorch.kernels.ScaleKernel(
+                gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1))).to(self.device)
+            cov_matrix = covar_module(mapped_cloud).evaluate_kernel().to_dense().to(self.device)
+            kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
+            kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
+            kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            additional_noise = self.noise_var * torch.eye(self.partial_cloud.shape[1]).to(self.device)
+            kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
+            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
+            posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
+            posterior_cholesky_upper, info = torch.linalg.cholesky_ex(posterior_var, upper=True)
+            posterior_cholesky_plus_noise = (
+                        (posterior_cholesky_upper.T @ posterior_cholesky_upper) + self.noise_var * torch.eye(
+                            posterior_cholesky_upper.shape[0])).to(self.device)
+            posterior_nlls[i] = 0.5 * (
+                    torch.log(torch.linalg.det(posterior_cholesky_plus_noise) + 1e-6) - torch.log(torch.tensor(1e-6)) +
+                    posterior_mean.T @ torch.linalg.inv(posterior_cholesky_plus_noise) @ posterior_mean)
+
+        return posterior_nlls.to(self.device)
+
     def train_diagonal(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
         num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
