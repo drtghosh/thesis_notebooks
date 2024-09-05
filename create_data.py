@@ -7,11 +7,12 @@ from scipy.spatial import distance
 
 
 class DumbCirc:
-    def __init__(self, circle_center_x, rec_long_side, rec_short_side):
+    def __init__(self, circle_center_x, rec_long_side, rec_short_side, seed):
         self.circle_center_x = circle_center_x
         self.rec_long_side = rec_long_side
         self.rec_short_side = rec_short_side
         self.circle_radius = distance.euclidean([circle_center_x, 0], [rec_long_side / 2, rec_short_side / 2])
+        self.seed = seed
 
     def create_samples(self, points_per_unit=100, equal_size=False):
         diff_x = self.circle_center_x - (self.rec_long_side / 2)
@@ -71,6 +72,7 @@ class DumbCirc:
             min_size = min(samples_till_now, eye_samples.shape[0])
             (dm, dn) = dumbbell_samples.shape
             (em, en) = eye_samples.shape
+            torch.manual_seed(self.seed)
             rand_dumbbell_idx = torch.randperm(dm)
             rand_eye_idx = torch.randperm(em)
             dumbbell_subsample_indices = rand_dumbbell_idx[:min_size]
@@ -86,6 +88,7 @@ class DumbCirc:
         num_dumbbell_subsample = int(percent_to_keep*dm)
         num_eye_subsample = int(percent_to_keep*em)
 
+        torch.manual_seed(self.seed)
         rand_dumbbell_idx = torch.randperm(dm)
         rand_eye_idx = torch.randperm(em)
         dumbbell_subsample_indices = rand_dumbbell_idx[:num_dumbbell_subsample]
@@ -135,11 +138,13 @@ class DumbCirc:
             tm_new = tm
             if tm > len(partial_clouds[0]):
                 tm_new = len(partial_clouds[0])
+                torch.manual_seed(self.seed)
                 rand_test_idx = torch.randperm(tm)
                 test_subsample_indices = rand_test_idx[:tm_new]
                 partial_to_test = partial_to_test[test_subsample_indices, :]
             else:
                 tm_needed = len(partial_clouds[0]) - tm
+                torch.manual_seed(self.seed)
                 rand_needed_idx = torch.randperm(tm)
                 needed_indices = rand_needed_idx[:tm_needed]
                 partial_to_test = np.concatenate(partial_to_test, partial_to_test[needed_indices, :])

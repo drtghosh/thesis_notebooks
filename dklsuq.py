@@ -171,7 +171,7 @@ class DeepKernelSUQ:
 
         return posterior_nlls.to(self.device)
 
-    def train_diagonal(self, num_epochs=20, batch_size=20, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
+    def train_diagonal(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
         num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.Adam([
