@@ -70,6 +70,11 @@ class DeepKernelSUQ:
         new_in_dim = self.space_dim + self.latent_dim
         self.cov_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=new_in_dim, out_dim=mapping_dim)
 
+        # normalization layer
+        conditional_size = self.space_dim + self.latent_dim
+        self.enc_norm = torch.nn.BatchNorm1d(num_features=conditional_size, affine=False)
+        self.map_norm = torch.nn.BatchNorm1d(num_features=mapping_dim)
+
     def set_device(self, device):
         self.device = device
         self.point_cloud.to(self.device)
@@ -113,7 +118,6 @@ class DeepKernelSUQ:
         partial = partial.to(self.device)
         # compute encoding in a batch
         encoding = self.encoder(partial.transpose(1, 2))
-        print("encoding: ", encoding)
         # repeat encoding for each point in full point cloud
         encoded_x = torch.cat((x, encoding.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
         # collect batch size
@@ -121,10 +125,9 @@ class DeepKernelSUQ:
         # create empty list to store negative log-likelihoods of multivariate normals
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
-            encoded_cloud = encoded_x[i]
+            encoded_cloud = self.enc_norm(encoded_x[i])
             covar_module = gpytorch.kernels.RBFKernel(ard_num_dims=encoded_cloud.size(1)).to(self.device)
             cov_matrix = covar_module(encoded_cloud).evaluate_kernel().to_dense().to(self.device)
-            print("gpy: ", cov_matrix)
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
@@ -132,9 +135,37 @@ class DeepKernelSUQ:
             kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
             posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
             posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
-            print("posterior: ", posterior_var)
-            posterior_nlls[i] = 0.5 * (torch.log(torch.linalg.det(posterior_var))
-                                       + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
+            posterior_nlls[i] = 0.5 * (
+                        torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
+                        + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
+
+        return posterior_nlls.to(self.device)
+
+    def get_posterior_with_mapping(self, x, y):
+        partial = x[:, self.point_cloud.shape[1]:, :]
+        partial = partial.to(self.device)
+        # compute encoding in a batch
+        encoding = self.encoder(partial.transpose(1, 2))
+        # repeat encoding for each point in full point cloud
+        encoded_x = torch.cat((x, encoding.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
+        # collect batch size
+        bs = x.size(0)
+        # create empty list to store negative log-likelihoods of multivariate normals
+        posterior_nlls = torch.empty(bs).to(self.device)
+        for i in range(bs):
+            encoded_cloud = self.cov_network(self.enc_norm(encoded_x[i]))
+            covar_module = gpytorch.kernels.RBFKernel(ard_num_dims=encoded_cloud.size(1)).to(self.device)
+            cov_matrix = covar_module(encoded_cloud).evaluate_kernel().to_dense().to(self.device)
+            kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
+            kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
+            kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            additional_noise = self.noise_var * torch.eye(self.partial_cloud.shape[1]).to(self.device)
+            kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
+            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
+            posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
+            posterior_nlls[i] = 0.5 * (
+                        torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
+                        + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
 
         return posterior_nlls.to(self.device)
 
@@ -150,9 +181,8 @@ class DeepKernelSUQ:
         # create empty list to store negative log-likelihoods of multivariate normals
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
-            mapped_cloud = self.cov_network(encoded_x[i])
-            covar_module = gpytorch.kernels.ScaleKernel(
-                gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1))).to(self.device)
+            mapped_cloud = self.map_norm(self.cov_network(encoded_x[i]))
+            covar_module = gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1)).to(self.device)
             cov_matrix = covar_module(mapped_cloud).evaluate_kernel().to_dense().to(self.device)
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
@@ -175,15 +205,17 @@ class DeepKernelSUQ:
         encoding = self.encoder(partial.transpose(1, 2))
         # repeat encoding for each point in full point cloud
         encoded_x = torch.cat((x, encoding.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
+        print(encoded_x)
         # collect batch size
         bs = x.size(0)
         # create empty list to store negative log-likelihoods of multivariate normals
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
-            mapped_cloud = self.cov_network(encoded_x[i])
+            mapped_cloud = self.map_norm(self.cov_network(encoded_x[i]))
             covar_module = gpytorch.kernels.ScaleKernel(
                 gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1))).to(self.device)
             cov_matrix = covar_module(mapped_cloud).evaluate_kernel().to_dense().to(self.device)
+            print(cov_matrix)
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
@@ -237,7 +269,6 @@ class DeepKernelSUQ:
         num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.AdamW([
             {'params': self.encoder.parameters()},
-            {'params': self.cov_network.parameters()}
         ], learning_rate, weight_decay=weight_decay)
 
         training_loss = 0
@@ -251,6 +282,34 @@ class DeepKernelSUQ:
                     y = self.partial_value_train[(num_batches-1)*batch_size:].to(self.device)
                 optimizer.zero_grad()
                 output = self.get_posterior_without_mapping(x, y)
+                # print(output)
+                loss = torch.mean(output)
+                loss.backward()
+                optimizer.step()
+                training_loss += loss.item()
+            training_loss /= num_batches
+            if i % print_every == 0:
+                print(f"Epoch:{i}, Loss: {training_loss}")
+
+    def train_with_mapping(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
+        train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
+        num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
+        optimizer = torch.optim.AdamW([
+            {'params': self.encoder.parameters()},
+            {'params': self.cov_network.parameters()}
+        ], learning_rate, weight_decay=weight_decay)
+
+        training_loss = 0
+        for i in range(num_epochs):
+            for j in range(num_batches):
+                if j < num_batches-1:
+                    x = train_x[j*batch_size: (j+1)*batch_size]
+                    y = self.partial_value_train[j*batch_size: (j+1)*batch_size].to(self.device)
+                else:
+                    x = train_x[(num_batches-1)*batch_size:]
+                    y = self.partial_value_train[(num_batches-1)*batch_size:].to(self.device)
+                optimizer.zero_grad()
+                output = self.get_posterior_with_mapping(x, y)
                 # print(output)
                 loss = torch.mean(output)
                 loss.backward()
@@ -344,7 +403,7 @@ class DeepKernelSUQ:
             if i % print_every == 0:
                 print(f"Epoch:{i}, Loss: {training_loss}")
 
-    def predict(self, points_to_predict=None):
+    def predict(self, points_to_predict=None, do_mapping=False):
         # collect partial data
         partial = self.test_partial.to(self.device)
         # check or create points to predict on
@@ -360,14 +419,17 @@ class DeepKernelSUQ:
         # repeat encoding for each point in full point cloud
         encoded_points = torch.cat((test_x, encoding.unsqueeze(1).repeat(1, test_x.size(1), 1)), 2)
         # set the covariance network to evaluation
-        self.cov_network.eval()
+        if do_mapping:
+            self.cov_network.eval()
         # collect batch size
         bs = self.test_partial.size(0)
         for i in range(bs):
             # print(f'cloud {i}')
-            mapped_cloud = self.cov_network(encoded_points[i])
-            covar_module = gpytorch.kernels.ScaleKernel(
-                gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1))).to(self.device)
+            if do_mapping:
+                mapped_cloud = self.cov_network(self.enc_norm(encoded_points[i]))
+            else:
+                mapped_cloud = self.enc_norm(encoded_points[i])
+            covar_module = gpytorch.kernels.RBFKernel(ard_num_dims=mapped_cloud.size(1)).to(self.device)
             cov_matrix = covar_module(mapped_cloud).evaluate_kernel().to_dense().to(self.device)
             kernel_ff = cov_matrix[:points_to_predict.size(0), :points_to_predict.size(0)]
             kernel_pf = cov_matrix[points_to_predict.size(0):, :points_to_predict.size(0)]
