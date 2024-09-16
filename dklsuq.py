@@ -70,10 +70,20 @@ class DeepKernelSUQ:
         new_in_dim = self.space_dim + self.latent_dim
         self.cov_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=new_in_dim, out_dim=mapping_dim)
 
-        # normalization layer
+        # conditioned point cloud size
         conditional_size = self.space_dim + self.latent_dim
+
+        # covariance kernel
+        self.covar_module_data = gpytorch.kernels.RBFKernel(ard_num_dims=self.space_dim).to(self.device)
+        self.covar_module_conditioned = gpytorch.kernels.RBFKernel(ard_num_dims=conditional_size).to(self.device)
+        self.covar_after_mapping = gpytorch.kernels.RBFKernel(ard_num_dims=mapping_dim).to(self.device)
+
+        # normalization layer
         self.enc_norm = torch.nn.BatchNorm1d(num_features=conditional_size, affine=False)
         self.map_norm = torch.nn.BatchNorm1d(num_features=mapping_dim)
+
+        # for combined kernel
+        self.alpha = torch.tensor(0.5)
 
     def set_device(self, device):
         self.device = device
@@ -126,8 +136,7 @@ class DeepKernelSUQ:
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
             encoded_cloud = self.enc_norm(encoded_x[i])
-            covar_module = gpytorch.kernels.RBFKernel(ard_num_dims=encoded_cloud.size(1)).to(self.device)
-            cov_matrix = covar_module(encoded_cloud).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix = self.covar_module_conditioned(encoded_cloud).evaluate_kernel().to_dense().to(self.device)
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
@@ -153,9 +162,10 @@ class DeepKernelSUQ:
         # create empty list to store negative log-likelihoods of multivariate normals
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
-            encoded_cloud = self.cov_network(self.enc_norm(encoded_x[i]))
-            covar_module = gpytorch.kernels.RBFKernel(ard_num_dims=encoded_cloud.size(1)).to(self.device)
-            cov_matrix = covar_module(encoded_cloud).evaluate_kernel().to_dense().to(self.device)
+            encoded_cloud = self.cov_network(encoded_x[i])
+            cov_matrix_data = self.covar_module_data(x[i]).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix_mapping = self.covar_after_mapping(encoded_cloud).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix = self.alpha * cov_matrix_data + (1-self.alpha) * cov_matrix_mapping
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
@@ -296,7 +306,8 @@ class DeepKernelSUQ:
         num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.AdamW([
             {'params': self.encoder.parameters()},
-            {'params': self.cov_network.parameters()}
+            {'params': self.cov_network.parameters()},
+            {'params': self.alpha}
         ], learning_rate, weight_decay=weight_decay)
 
         training_loss = 0
