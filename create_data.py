@@ -113,7 +113,7 @@ class DumbCirc:
 
         return eye_samples[subsample_indices, :]
 
-    def create_dataset(self, train_instances=1000, test_instances=1, ppu_choices=None, percent_choices=None, equal_size=False, special_entry=25):
+    def create_dataset(self, train_instances=1000, test_instances=1, ppu_choices=None, percent_choices=None, equal_size=False, special_entry=10):
         full_clouds = []
         partial_clouds = []
         labels = []
@@ -147,8 +147,10 @@ class DumbCirc:
                     partial_to_add = np.concatenate(special_partial, special_partial[needed_indices, :])
                 full_clouds.append(ds.numpy())
                 partial_clouds.append(partial_to_add.numpy())
+                labels.append(np.array([1, 0]))
                 full_clouds.append(es.numpy())
                 partial_clouds.append(partial_to_add.numpy())
+                labels.append(np.array([0, 1]))
             else:
                 full_clouds.append(ds.numpy())
                 partial_clouds.append(dss.numpy())

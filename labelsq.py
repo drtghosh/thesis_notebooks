@@ -39,19 +39,23 @@ class LabeledSUQ:
      - device: use 'cuda' if available
     """
 
-    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value_train=None, noise_present=True,
-                 noise_var=0.01, test_partial=None, partial_value_test=None, latent_dim=256, cov_layers=3,
-                 hidden_nodes=64, mapping_dim=256+256, grid_size=100, device=None):
+    def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value_train=None, train_labels=None,
+                 noise_present=True, noise_var=0.01, test_partial=None, partial_value_test=None, test_labels=None,
+                 latent_dim=256, cov_layers=3, hidden_nodes=64, mapping_dim=256+256, grid_size=100, count_labels=0,
+                 device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.mapping_dim = mapping_dim
         self.cov_layers = cov_layers
         self.grid_sizes = np.ones(self.space_dim, dtype=np.int32)*grid_size
+        self.count_labels = count_labels
         self.device = device
         self.point_cloud = point_cloud
         self.partial_cloud = partial_cloud
         self.partial_value_train = partial_value_train
+        self.train_labels = train_labels
         self.partial_value_test = partial_value_test
+        self.test_labels = test_labels
         self.noise_present = noise_present
         if noise_present:
             self.noise_var = noise_var
@@ -59,7 +63,7 @@ class LabeledSUQ:
 
         # set point cloud data or assert that one of point cloud data and space dim is specified
         if point_cloud is not None:
-            self.set_training_data(point_cloud, partial_cloud)
+            self.set_training_data(point_cloud, partial_cloud, train_labels, test_labels)
         else:
             assert space_dim is not None
             self.space_dim = space_dim
@@ -68,7 +72,8 @@ class LabeledSUQ:
         self.encoder = PointNetEncoder(self.partial_cloud.shape[1], self.space_dim, 2, 64, 3, 2, self.latent_dim)
 
         # initialize the mapping network for covariance
-        new_in_dim = self.space_dim # + self.latent_dim
+        new_in_dim = self.space_dim + self.count_labels
+        # new_in_dim = self.space_dim + self.latent_dim
         self.map_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=new_in_dim, out_dim=mapping_dim)
 
         # conditioned point cloud size
@@ -95,7 +100,7 @@ class LabeledSUQ:
         self.encoder.to(self.device)
         self.map_network.to(self.device)
 
-    def set_training_data(self, point_cloud, partial_cloud, partial_value_train=None):
+    def set_training_data(self, point_cloud, partial_cloud, train_labels, partial_value_train=None):
         assert point_cloud.shape[0] == partial_cloud.shape[0]
         assert point_cloud.shape[2] == partial_cloud.shape[2]
         assert point_cloud.shape[1] >= partial_cloud.shape[1]
@@ -109,12 +114,14 @@ class LabeledSUQ:
                 self.partial_value_train = self.noise_var * torch.randn(self.partial_cloud.size()[:-1])
             else:
                 self.partial_value_train = torch.zeros(self.partial_cloud.size()[:-1])
+        self.train_labels = train_labels
         # self.fpc_copy = torch.tensor(point_cloud, dtype=torch.float32, device=self.device)
         # self.ppc_copy = torch.tensor(partial_cloud, dtype=torch.float32, device=self.device)
         # self.fpc_repeated = torch.cat((self.fpc_copy, self.fpc_copy), dim=1).to(self.device)
 
-    def set_test_data(self, test_partial, partial_value_test=None):
+    def set_test_data(self, test_partial, test_labels, partial_value_test=None):
         self.test_partial = test_partial
+        self.test_labels = test_labels
         if partial_value_test is not None:
             self.partial_value_test = partial_value_test
         else:
@@ -125,7 +132,9 @@ class LabeledSUQ:
         self.test_partial.to(self.device)
         self.partial_value_test.to(self.device)
 
-    def get_posterior(self, x, y):
+    def get_posterior(self, x, y, labels):
+        if self.count_labels:
+            x = torch.cat((x, labels.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
         # collect batch size
         bs = x.size(0)
         # create empty list to store negative log-likelihoods of multivariate normals
@@ -153,21 +162,21 @@ class LabeledSUQ:
         train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
         num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.AdamW([
-            {'params': self.map_network.parameters()},
-            {'params': self.alpha}
+            {'params': self.map_network.parameters()}
         ], learning_rate, weight_decay=weight_decay)
-
         training_loss = 0
         for i in range(num_epochs):
             for j in range(num_batches):
                 if j < num_batches-1:
                     x = train_x[j*batch_size: (j+1)*batch_size]
                     y = self.partial_value_train[j*batch_size: (j+1)*batch_size].to(self.device)
+                    train_l = self.train_labels[j*batch_size: (j+1)*batch_size].to(self.device)
                 else:
                     x = train_x[(num_batches-1)*batch_size:]
                     y = self.partial_value_train[(num_batches-1)*batch_size:].to(self.device)
+                    train_l = self.train_labels[(num_batches-1)*batch_size:].to(self.device)
                 optimizer.zero_grad()
-                output = self.get_posterior(x, y)
+                output = self.get_posterior(x, y, train_l)
                 # print(output)
                 loss = torch.mean(output)
                 loss.backward()
@@ -184,6 +193,9 @@ class LabeledSUQ:
         # combine all data
         test_x = torch.cat((points_to_predict.repeat(self.test_partial.size(0), 1, 1), self.test_partial), 1).to(
             self.device)
+        # add label information if required
+        if self.count_labels:
+            test_x = torch.cat((test_x, self.test_labels.unsqueeze(1).repeat(1, test_x.size(1), 1)), 2)
         # set the covariance network to evaluation
         self.map_network.eval()
         # collect batch size
