@@ -172,6 +172,7 @@ class DeepKernelSUQ:
             cov_matrix_data = self.covar_module_data(self.data_norm(x[i])).evaluate_kernel().to_dense().to(self.device)
             cov_matrix_mapping = self.covar_after_mapping(encoded_mapping).evaluate_kernel().to_dense().to(self.device)
             cov_matrix = self.alpha * cov_matrix_data + (1-self.alpha) * cov_matrix_mapping
+            print('Covariance Matrix: ', cov_matrix)
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
@@ -179,6 +180,7 @@ class DeepKernelSUQ:
             kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
             posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
             posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
+            print('Posterior Variance: ', posterior_var)
             posterior_nlls[i] = 0.5 * (
                         torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
                         + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
