@@ -41,14 +41,15 @@ class AugmentedSUQ:
 
     def __init__(self, space_dim=2, point_cloud=None, partial_cloud=None, partial_value_train=None, train_labels=None,
                  noise_present=True, noise_var=0.01, test_partial=None, partial_value_test=None, test_labels=None,
-                 latent_dim=256, cov_layers=3, hidden_nodes=64, mapping_dim=256+256, grid_size=100, count_labels=0,
-                 device=None):
+                 latent_dim=256, cov_layers=3, hidden_nodes=64, mapping_dim=256 + 256, grid_size=100, count_labels=0,
+                 negative_cloud=None, device=None):
         self.space_dim = space_dim
         self.latent_dim = latent_dim
         self.mapping_dim = mapping_dim
         self.cov_layers = cov_layers
-        self.grid_sizes = np.ones(self.space_dim, dtype=np.int32)*grid_size
+        self.grid_sizes = np.ones(self.space_dim, dtype=np.int32) * grid_size
         self.count_labels = count_labels
+        self.negative_cloud = negative_cloud
         self.device = device
         self.point_cloud = point_cloud
         self.partial_cloud = partial_cloud
@@ -100,13 +101,17 @@ class AugmentedSUQ:
         self.encoder.to(self.device)
         self.map_network.to(self.device)
 
-    def set_training_data(self, point_cloud, partial_cloud, train_labels, partial_value_train=None):
+    def set_training_data(self, point_cloud, partial_cloud, negative_cloud, train_labels, partial_value_train=None):
         assert point_cloud.shape[0] == partial_cloud.shape[0]
         assert point_cloud.shape[2] == partial_cloud.shape[2]
         assert point_cloud.shape[1] >= partial_cloud.shape[1]
+        assert point_cloud.shape[0] == negative_cloud.shape[0]
+        assert point_cloud.shape[2] == negative_cloud.shape[2]
+        assert point_cloud.shape[1] == negative_cloud.shape[1]
         self.point_cloud = point_cloud
         self.space_dim = point_cloud.size(-1)
         self.partial_cloud = partial_cloud
+        self.negative_cloud = negative_cloud
         if partial_value_train is not None:
             self.partial_value_train = partial_value_train
         else:
@@ -135,31 +140,51 @@ class AugmentedSUQ:
     def get_posterior(self, x, y, labels):
         if self.count_labels:
             x = torch.cat((x, labels.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
+        else:
+            partial = x[:, :self.partial_cloud.shape[1], :]
+            partial = partial.to(self.device)
+            # compute encoding in a batch
+            encoding = self.encoder(partial.transpose(1, 2))
+            # repeat encoding for each point in full point cloud
+            x = torch.cat((x, encoding.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
         # collect batch size
         bs = x.size(0)
         # create empty list to store negative log-likelihoods of multivariate normals
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
             mapping = self.map_norm(self.map_network(x[i]))
-            # cov_matrix_data = self.covar_module_data(self.data_norm(x[i])).evaluate_kernel().to_dense().to(self.device)
+            # cov_matrix_data = self.covar_module_data(self.data_norm(x[i])).evaluate_kernel()
+            # .to_dense().to(self.device)
             # cov_matrix_mapping = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
             # cov_matrix = self.alpha * cov_matrix_data + (1-self.alpha) * cov_matrix_mapping
             cov_matrix = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
-            kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
-            kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
-            kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
+            kernel_pp = cov_matrix[:self.partial_cloud.shape[1], :self.partial_cloud.shape[1]]
+            kernel_ff_pos = cov_matrix[
+                            self.partial_cloud.shape[1]:self.partial_cloud.shape[1] + self.point_cloud.shape[1],
+                            self.partial_cloud.shape[1]:self.partial_cloud.shape[1] + self.point_cloud.shape[1]]
+            kernel_ff_neg = cov_matrix[self.partial_cloud.shape[1] + self.point_cloud.shape[1]:,
+                            self.partial_cloud.shape[1] + self.point_cloud.shape[1]:]
+            kernel_pf_pos = cov_matrix[:self.partial_cloud.shape[1],
+                            self.partial_cloud.shape[1]:self.partial_cloud.shape[1] + self.point_cloud.shape[1]]
+            kernel_pf_neg = cov_matrix[:self.partial_cloud.shape[1],
+                            self.partial_cloud.shape[1] + self.point_cloud.shape[1]:]
             additional_noise = self.noise_var * torch.eye(self.partial_cloud.shape[1]).to(self.device)
             kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
-            posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
-            posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
+            posterior_mean_pos = kernel_pf_pos.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
+            posterior_var_pos = kernel_ff_pos - kernel_pf_pos.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf_pos
+            posterior_mean_neg = kernel_pf_neg.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
+            posterior_var_neg = kernel_ff_neg - kernel_pf_neg.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf_neg
+            print(torch.linalg.det(posterior_var_pos) / torch.linalg.det(posterior_var_pos))
             posterior_nlls[i] = 0.5 * (
-                        torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
-                        + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
+                    torch.log(torch.linalg.det(posterior_var_pos) + 1e-6) - torch.log(torch.tensor(1e-6))
+                    - torch.log(torch.linalg.det(posterior_var_neg) + 1e-6) - torch.log(torch.tensor(1e-6))
+                    + posterior_mean_pos.T @ torch.linalg.inv(posterior_var_pos) @ posterior_mean_pos
+                    - posterior_mean_neg.T @ torch.linalg.inv(posterior_var_neg) @ posterior_mean_neg)
 
         return posterior_nlls.to(self.device)
 
     def train(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
-        train_x = torch.cat((self.point_cloud, self.partial_cloud), 1).to(self.device)
+        train_x = torch.cat((self.partial_cloud, self.point_cloud, self.negative_cloud), 1).to(self.device)
         num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.AdamW([
             {'params': self.map_network.parameters()}
@@ -167,14 +192,14 @@ class AugmentedSUQ:
         training_loss = 0
         for i in range(num_epochs):
             for j in range(num_batches):
-                if j < num_batches-1:
-                    x = train_x[j*batch_size: (j+1)*batch_size]
-                    y = self.partial_value_train[j*batch_size: (j+1)*batch_size].to(self.device)
-                    train_l = self.train_labels[j*batch_size: (j+1)*batch_size].to(self.device)
+                if j < num_batches - 1:
+                    x = train_x[j * batch_size: (j + 1) * batch_size]
+                    y = self.partial_value_train[j * batch_size: (j + 1) * batch_size].to(self.device)
+                    train_l = self.train_labels[j * batch_size: (j + 1) * batch_size].to(self.device)
                 else:
-                    x = train_x[(num_batches-1)*batch_size:]
-                    y = self.partial_value_train[(num_batches-1)*batch_size:].to(self.device)
-                    train_l = self.train_labels[(num_batches-1)*batch_size:].to(self.device)
+                    x = train_x[(num_batches - 1) * batch_size:]
+                    y = self.partial_value_train[(num_batches - 1) * batch_size:].to(self.device)
+                    train_l = self.train_labels[(num_batches - 1) * batch_size:].to(self.device)
                 optimizer.zero_grad()
                 output = self.get_posterior(x, y, train_l)
                 # print(output)
@@ -233,9 +258,9 @@ class AugmentedSUQ:
     def create_grid(self, box_min=None, box_max=None, eps=0.1):
         # find the bounding box for all dataset
         if box_min is None:
-            box_min = torch.amin(self.test_partial,  (1, 0))-eps
+            box_min = torch.amin(self.test_partial, (1, 0)) - eps
         if box_max is None:
-            box_max = torch.amax(self.test_partial,  (1, 0))+eps
+            box_max = torch.amax(self.test_partial, (1, 0)) + eps
 
         # Build a grid (dimension-agnostic)
         grid_vertices = np.meshgrid(

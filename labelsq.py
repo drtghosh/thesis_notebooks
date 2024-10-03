@@ -63,7 +63,7 @@ class LabeledSUQ:
 
         # set point cloud data or assert that one of point cloud data and space dim is specified
         if point_cloud is not None:
-            self.set_training_data(point_cloud, partial_cloud, train_labels, test_labels)
+            self.set_training_data(point_cloud, partial_cloud, train_labels)
         else:
             assert space_dim is not None
             self.space_dim = space_dim
