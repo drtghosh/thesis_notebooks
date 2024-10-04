@@ -114,12 +114,13 @@ class DumbCirc:
         return eye_samples[subsample_indices, :]
 
     def create_negative_instances(self, positive_samples, bias):
-        negative_samples = []
-        for sample in positive_samples:
-            x, y = sample
-            negative_samples.append([x + random.choice([-1, 1]) * np.random.uniform(bias, 1) * self.rec_short_side / 2,
-                                     y + random.choice([-1, 1]) * np.random.uniform(bias, 1) * self.rec_short_side / 2])
-        return np.array(negative_samples)
+        negative_samples = torch.empty(positive_samples.size(), dtype=torch.float32)
+        for i in range(len(positive_samples)):
+            x, y = positive_samples[i]
+            negative_samples[i] = torch.Tensor(
+                [x + random.choice([-1, 1]) * np.random.uniform(bias, 1) * self.rec_short_side / 2,
+                 y + random.choice([-1, 1]) * np.random.uniform(bias, 1) * self.rec_short_side / 2])
+        return negative_samples
 
     def create_dataset(self, train_instances=1000, test_instances=1, ppu_choices=None, percent_choices=None, equal_size=False, special_entry=10, bias=0.1):
         full_clouds_positive = []
@@ -139,10 +140,10 @@ class DumbCirc:
                 percent = random.choice([0.05, 0.1, 0.15, 0.2, 0.25])
             ds, es, dss, ess = self.subsample_shape(ppu, percent, equal_size)
             full_clouds_positive.append(ds.numpy())
-            full_clouds_negative.append(self.create_negative_instances(ds.numpy(), bias))
+            full_clouds_negative.append(self.create_negative_instances(ds, bias).numpy())
             labels.append(np.array([1, 0]))
             full_clouds_positive.append(es.numpy())
-            full_clouds_negative.append(self.create_negative_instances(es.numpy(), bias))
+            full_clouds_negative.append(self.create_negative_instances(es, bias).numpy())
             labels.append(np.array([0, 1]))
             if i % special_entry == 0:
                 special_partial = self.subsample_eye_side()

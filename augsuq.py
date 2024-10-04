@@ -64,7 +64,7 @@ class AugmentedSUQ:
 
         # set point cloud data or assert that one of point cloud data and space dim is specified
         if point_cloud is not None:
-            self.set_training_data(point_cloud, partial_cloud, train_labels, test_labels)
+            self.set_training_data(point_cloud, partial_cloud, negative_cloud, train_labels)
         else:
             assert space_dim is not None
             self.space_dim = space_dim
@@ -73,8 +73,10 @@ class AugmentedSUQ:
         self.encoder = PointNetEncoder(self.partial_cloud.shape[1], self.space_dim, 2, 64, 3, 2, self.latent_dim)
 
         # initialize the mapping network for covariance
-        new_in_dim = self.space_dim + self.count_labels
-        # new_in_dim = self.space_dim + self.latent_dim
+        if count_labels:
+            new_in_dim = self.space_dim + self.count_labels
+        else:
+            new_in_dim = self.space_dim + self.latent_dim
         self.map_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=new_in_dim, out_dim=mapping_dim)
 
         # conditioned point cloud size
@@ -91,7 +93,7 @@ class AugmentedSUQ:
         self.map_norm = torch.nn.BatchNorm1d(num_features=mapping_dim)
 
         # for combined kernel
-        self.alpha = torch.tensor(0.5)
+        self.alpha = torch.tensor(0.0)
 
     def set_device(self, device):
         self.device = device
@@ -137,7 +139,7 @@ class AugmentedSUQ:
         self.test_partial.to(self.device)
         self.partial_value_test.to(self.device)
 
-    def get_posterior(self, x, y, labels):
+    def get_posterior_zero(self, x, y, labels):
         if self.count_labels:
             x = torch.cat((x, labels.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
         else:
@@ -153,11 +155,11 @@ class AugmentedSUQ:
         posterior_nlls = torch.empty(bs).to(self.device)
         for i in range(bs):
             mapping = self.map_norm(self.map_network(x[i]))
-            # cov_matrix_data = self.covar_module_data(self.data_norm(x[i])).evaluate_kernel()
-            # .to_dense().to(self.device)
-            # cov_matrix_mapping = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
-            # cov_matrix = self.alpha * cov_matrix_data + (1-self.alpha) * cov_matrix_mapping
-            cov_matrix = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix_conditioned = self.covar_module_conditioned(self.enc_norm(x[i])).evaluate_kernel().to_dense().to(
+                self.device)
+            cov_matrix_mapping = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix = self.alpha * cov_matrix_conditioned + (1-self.alpha) * cov_matrix_mapping
+            # cov_matrix = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
             kernel_pp = cov_matrix[:self.partial_cloud.shape[1], :self.partial_cloud.shape[1]]
             kernel_ff_pos = cov_matrix[
                             self.partial_cloud.shape[1]:self.partial_cloud.shape[1] + self.point_cloud.shape[1],
@@ -174,20 +176,66 @@ class AugmentedSUQ:
             posterior_var_pos = kernel_ff_pos - kernel_pf_pos.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf_pos
             posterior_mean_neg = kernel_pf_neg.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
             posterior_var_neg = kernel_ff_neg - kernel_pf_neg.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf_neg
-            print(torch.linalg.det(posterior_var_pos) / torch.linalg.det(posterior_var_pos))
             posterior_nlls[i] = 0.5 * (
                     torch.log(torch.linalg.det(posterior_var_pos) + 1e-6) - torch.log(torch.tensor(1e-6))
-                    - torch.log(torch.linalg.det(posterior_var_neg) + 1e-6) - torch.log(torch.tensor(1e-6))
+                    - torch.log(torch.linalg.det(posterior_var_neg) + 1e-6) + torch.log(torch.tensor(1e-6))
                     + posterior_mean_pos.T @ torch.linalg.inv(posterior_var_pos) @ posterior_mean_pos
                     - posterior_mean_neg.T @ torch.linalg.inv(posterior_var_neg) @ posterior_mean_neg)
 
         return posterior_nlls.to(self.device)
 
-    def train(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.0005, weight_decay=1e-5):
+    def get_posterior_binary(self, x, y, labels):
+        if self.count_labels:
+            x = torch.cat((x, labels.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
+        else:
+            partial = x[:, :self.partial_cloud.shape[1], :]
+            partial = partial.to(self.device)
+            # compute encoding in a batch
+            encoding = self.encoder(partial.transpose(1, 2))
+            # repeat encoding for each point in full point cloud
+            x = torch.cat((x, encoding.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
+        # collect batch size
+        bs = x.size(0)
+        # create empty list to store negative log-likelihoods of multivariate normals
+        posterior_nlls = torch.empty(bs).to(self.device)
+        for i in range(bs):
+            mapping = self.map_norm(self.map_network(x[i]))
+            cov_matrix_conditioned = self.covar_module_conditioned(self.enc_norm(x[i])).evaluate_kernel().to_dense().to(
+                self.device)
+            cov_matrix_mapping = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix = self.alpha * cov_matrix_conditioned + (1-self.alpha) * cov_matrix_mapping
+            # cov_matrix = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
+            kernel_pp = cov_matrix[:self.partial_cloud.shape[1], :self.partial_cloud.shape[1]]
+            kernel_ff_pos = cov_matrix[
+                            self.partial_cloud.shape[1]:self.partial_cloud.shape[1] + self.point_cloud.shape[1],
+                            self.partial_cloud.shape[1]:self.partial_cloud.shape[1] + self.point_cloud.shape[1]]
+            kernel_ff_neg = cov_matrix[self.partial_cloud.shape[1] + self.point_cloud.shape[1]:,
+                            self.partial_cloud.shape[1] + self.point_cloud.shape[1]:]
+            kernel_pf_pos = cov_matrix[:self.partial_cloud.shape[1],
+                            self.partial_cloud.shape[1]:self.partial_cloud.shape[1] + self.point_cloud.shape[1]]
+            kernel_pf_neg = cov_matrix[:self.partial_cloud.shape[1],
+                            self.partial_cloud.shape[1] + self.point_cloud.shape[1]:]
+            additional_noise = self.noise_var * torch.eye(self.partial_cloud.shape[1]).to(self.device)
+            kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
+            posterior_mean_pos = kernel_pf_pos.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
+            posterior_var_pos = kernel_ff_pos - kernel_pf_pos.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf_pos
+            posterior_mean_neg = kernel_pf_neg.T @ torch.linalg.inv(kernel_with_noise) @ (y[i] + 1)
+            posterior_var_neg = kernel_ff_neg - kernel_pf_neg.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf_neg
+            posterior_nlls[i] = 0.5 * (
+                    torch.log(torch.linalg.det(posterior_var_pos) + 1e-6) - torch.log(torch.tensor(1e-6))
+                    + torch.log(torch.linalg.det(posterior_var_neg) + 1e-6) - torch.log(torch.tensor(1e-6))
+                    + posterior_mean_pos.T @ torch.linalg.inv(posterior_var_pos) @ posterior_mean_pos
+                    + (posterior_mean_neg - 1).T @ torch.linalg.inv(posterior_var_neg) @ (posterior_mean_neg - 1))
+
+        return posterior_nlls.to(self.device)
+
+    def train(self, num_epochs=20, batch_size=16, print_every=1, learning_rate=0.005, weight_decay=1e-5, kind='z'):
         train_x = torch.cat((self.partial_cloud, self.point_cloud, self.negative_cloud), 1).to(self.device)
         num_batches = np.ceil(train_x.size(0) / batch_size).astype('int')
         optimizer = torch.optim.AdamW([
-            {'params': self.map_network.parameters()}
+            {'params': self.encoder.parameters()},
+            {'params': self.map_network.parameters()},
+            {'params': self.alpha}
         ], learning_rate, weight_decay=weight_decay)
         training_loss = 0
         for i in range(num_epochs):
@@ -201,12 +249,19 @@ class AugmentedSUQ:
                     y = self.partial_value_train[(num_batches - 1) * batch_size:].to(self.device)
                     train_l = self.train_labels[(num_batches - 1) * batch_size:].to(self.device)
                 optimizer.zero_grad()
-                output = self.get_posterior(x, y, train_l)
-                # print(output)
-                loss = torch.mean(output)
-                loss.backward()
-                optimizer.step()
-                training_loss += loss.item()
+                if kind == 'z':
+                    output = self.get_posterior_zero(x, y, train_l)
+                    loss = torch.mean(output)
+                    loss.backward()
+                    optimizer.step()
+                    training_loss += loss.item()
+                if kind == 'b':
+                    output = self.get_posterior_binary(x, y, train_l)
+                    # print(output)
+                    loss = torch.mean(output)
+                    loss.backward()
+                    optimizer.step()
+                    training_loss += loss.item()
             training_loss /= num_batches
             if i % print_every == 0:
                 print(f"Epoch:{i}, Loss: {training_loss}")
@@ -221,6 +276,15 @@ class AugmentedSUQ:
         # add label information if required
         if self.count_labels:
             test_x = torch.cat((test_x, self.test_labels.unsqueeze(1).repeat(1, test_x.size(1), 1)), 2)
+        else:
+            # collect partial data
+            partial = self.test_partial.to(self.device)
+            # set the encoder to evaluation mode
+            self.encoder.eval()
+            # compute encoding in a batch
+            encoding = self.encoder(partial.transpose(1, 2))
+            # repeat encoding for each point in full point cloud
+            test_x = torch.cat((test_x, encoding.unsqueeze(1).repeat(1, test_x.size(1), 1)), 2)
         # set the covariance network to evaluation
         self.map_network.eval()
         # collect batch size
@@ -228,7 +292,12 @@ class AugmentedSUQ:
         for i in range(bs):
             # print(f'cloud {i}')
             mapped_cloud = self.map_norm(self.map_network(test_x[i]))
-            cov_matrix = self.covar_after_mapping(mapped_cloud).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix_conditioned = self.covar_module_conditioned(
+                self.enc_norm(test_x[i])).evaluate_kernel().to_dense().to(
+                self.device)
+            cov_matrix_mapping = self.covar_after_mapping(mapped_cloud).evaluate_kernel().to_dense().to(self.device)
+            cov_matrix = self.alpha * cov_matrix_conditioned + (1 - self.alpha) * cov_matrix_mapping
+            # cov_matrix = self.covar_after_mapping(mapped_cloud).evaluate_kernel().to_dense().to(self.device)
             kernel_ff = cov_matrix[:points_to_predict.size(0), :points_to_predict.size(0)]
             kernel_pf = cov_matrix[points_to_predict.size(0):, :points_to_predict.size(0)]
             kernel_pp = cov_matrix[points_to_predict.size(0):, points_to_predict.size(0):]
