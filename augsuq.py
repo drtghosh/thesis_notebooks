@@ -2,7 +2,7 @@
 import torch
 import gpytorch
 import numpy as np
-import torch.nn.functional as F
+import torch.nn.functional as fn
 from scipy.stats import norm
 # from torch.distributions import MultivariateNormal as multiNorm
 import matplotlib.pyplot as plt
@@ -81,7 +81,10 @@ class AugmentedSUQ:
         self.map_network = MLPGrow(h_nodes=hidden_nodes, num_layers=cov_layers, in_dim=new_in_dim, out_dim=mapping_dim)
 
         # conditioned point cloud size
-        conditional_size = self.space_dim + self.latent_dim
+        if count_labels:
+            conditional_size = self.space_dim + count_labels
+        else:
+            conditional_size = self.space_dim + self.latent_dim
 
         # covariance kernel
         self.covar_module_data = gpytorch.kernels.RBFKernel(ard_num_dims=self.space_dim).to(self.device)
@@ -227,9 +230,9 @@ class AugmentedSUQ:
                     + torch.log(torch.linalg.det(posterior_var_neg) + 1e-6) - torch.log(torch.tensor(1e-6))
                     + posterior_mean_pos.T @ torch.linalg.inv(posterior_var_pos) @ posterior_mean_pos
                     + (posterior_mean_neg - 1).T @ torch.linalg.inv(posterior_var_neg) @ (posterior_mean_neg - 1))
-            loss_entropy = - (F.softmax(cov_matrix, dim=1) * F.log_softmax(cov_matrix, dim=1)).mean()
+            loss_entropy = - ((fn.softmax(cov_matrix, dim=1) * fn.log_softmax(cov_matrix, dim=1)).sum(dim=1)).mean()
             # print(loss_entropy)
-            posterior_loss[i] = loss_nll + loss_entropy
+            posterior_loss[i] = loss_nll + reg_const * loss_entropy
 
         return posterior_loss.to(self.device)
 

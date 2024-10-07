@@ -3,6 +3,7 @@ import torch
 import gpytorch
 import numpy as np
 from scipy.stats import norm
+import torch.nn.functional as fn
 # from torch.distributions import MultivariateNormal as multiNorm
 import matplotlib.pyplot as plt
 # import torch.nn as nn
@@ -145,6 +146,8 @@ class LabeledSUQ:
             # cov_matrix_mapping = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
             # cov_matrix = self.alpha * cov_matrix_data + (1-self.alpha) * cov_matrix_mapping
             cov_matrix = self.covar_after_mapping(mapping).evaluate_kernel().to_dense().to(self.device)
+            if i == bs-1:
+                print(cov_matrix)
             kernel_ff = cov_matrix[:self.point_cloud.shape[1], :self.point_cloud.shape[1]]
             kernel_pf = cov_matrix[self.point_cloud.shape[1]:, :self.point_cloud.shape[1]]
             kernel_pp = cov_matrix[self.point_cloud.shape[1]:, self.point_cloud.shape[1]:]
@@ -152,9 +155,11 @@ class LabeledSUQ:
             kernel_with_noise = (kernel_pp + additional_noise).to(self.device)
             posterior_mean = kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ y[i]
             posterior_var = kernel_ff - kernel_pf.T @ torch.linalg.inv(kernel_with_noise) @ kernel_pf
-            posterior_nlls[i] = 0.5 * (
+            loss_nll = 0.5 * (
                         torch.log(torch.linalg.det(posterior_var) + 1e-6) - torch.log(torch.tensor(1e-6))
                         + posterior_mean.T @ torch.linalg.inv(posterior_var) @ posterior_mean)
+            loss_entropy = - ((fn.softmax(cov_matrix, dim=1) * fn.log_softmax(cov_matrix, dim=1)).sum(dim=1)).mean()
+            posterior_nlls[i] = loss_nll + loss_entropy
 
         return posterior_nlls.to(self.device)
 
