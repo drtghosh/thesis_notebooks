@@ -95,8 +95,18 @@ class Dumb:
 
         return eye_samples[subsample_indices, :]
 
-    def create_dataset(self, train_instances=1000, test_instances=1, ppu_choices=None, percent_choices=None, equal_size=False, special_entry=10):
-        full_clouds = []
+    def create_negative_instances(self, positive_samples, bias):
+        negative_samples = torch.empty(positive_samples.size(), dtype=torch.float32)
+        for i in range(len(positive_samples)):
+            x, y = positive_samples[i]
+            negative_samples[i] = torch.Tensor(
+                [x + random.choice([-1, 1]) * np.random.uniform(bias, 1) * self.rec_short_side / 2,
+                 y + random.choice([-1, 1]) * np.random.uniform(bias, 1) * self.rec_short_side / 2])
+        return negative_samples
+
+    def create_dataset(self, train_instances=1000, test_instances=1, ppu_choices=None, percent_choices=None, equal_size=False, special_entry=10, bias=0.1):
+        full_clouds_positive = []
+        full_clouds_negative = []
         partial_clouds = []
         labels = []
         partial_clouds_test = []
@@ -111,6 +121,9 @@ class Dumb:
             else:
                 percent = random.choice([0.05, 0.1, 0.15, 0.2, 0.25])
             ds, dss = self.subsample_shape(ppu, percent, equal_size)
+            full_clouds_positive.append(ds.numpy())
+            full_clouds_negative.append(self.create_negative_instances(ds, bias).numpy())
+            labels.append(np.array([1, 0]))
             if i % special_entry == 0:
                 special_partial = self.subsample_eye_side()
                 tm, tn = special_partial.shape
@@ -127,13 +140,9 @@ class Dumb:
                     rand_needed_idx = torch.randperm(tm)
                     needed_indices = rand_needed_idx[:tm_needed]
                     partial_to_add = np.concatenate(special_partial, special_partial[needed_indices, :])
-                full_clouds.append(ds.numpy())
                 partial_clouds.append(partial_to_add.numpy())
-                labels.append(np.array([1, 0]))
             else:
-                full_clouds.append(ds.numpy())
                 partial_clouds.append(dss.numpy())
-                labels.append(np.array([1, 0]))
 
         for j in range(test_instances):
             partial_to_test = self.subsample_eye_side()
@@ -154,5 +163,5 @@ class Dumb:
             partial_clouds_test.append(partial_to_test.numpy())
             labels_test.append(np.array([1, 0]))
 
-        return (np.array(full_clouds), np.array(partial_clouds), np.array(labels),
-                np.array(partial_clouds_test), np.array(labels_test))
+        return np.array(full_clouds_positive), np.array(full_clouds_negative), np.array(partial_clouds), np.array(
+            labels), np.array(partial_clouds_test), np.array(labels_test)
