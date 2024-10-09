@@ -62,7 +62,6 @@ class Dumb:
         (dm, dn) = dumbbell_samples.shape
         num_dumbbell_subsample = int(percent_to_keep*dm)
 
-        torch.manual_seed(self.seed)
         rand_dumbbell_idx = torch.randperm(dm)
         dumbbell_subsample_indices = rand_dumbbell_idx[:num_dumbbell_subsample]
         dumbbell_remaining_indices = rand_dumbbell_idx[num_dumbbell_subsample:]
@@ -130,13 +129,11 @@ class Dumb:
                 tm_new = tm
                 if tm > len(dss):
                     tm_new = len(dss)
-                    torch.manual_seed(self.seed)
                     rand_test_idx = torch.randperm(tm)
                     test_subsample_indices = rand_test_idx[:tm_new]
                     partial_to_add = special_partial[test_subsample_indices, :]
                 else:
                     tm_needed = len(dss) - tm
-                    torch.manual_seed(self.seed)
                     rand_needed_idx = torch.randperm(tm)
                     needed_indices = rand_needed_idx[:tm_needed]
                     partial_to_add = np.concatenate(special_partial, special_partial[needed_indices, :])
@@ -150,13 +147,11 @@ class Dumb:
             tm_new = tm
             if tm > len(partial_clouds[0]):
                 tm_new = len(partial_clouds[0])
-                torch.manual_seed(self.seed)
                 rand_test_idx = torch.randperm(tm)
                 test_subsample_indices = rand_test_idx[:tm_new]
                 partial_to_test = partial_to_test[test_subsample_indices, :]
             else:
                 tm_needed = len(partial_clouds[0]) - tm
-                torch.manual_seed(self.seed)
                 rand_needed_idx = torch.randperm(tm)
                 needed_indices = rand_needed_idx[:tm_needed]
                 partial_to_test = np.concatenate(partial_to_test, partial_to_test[needed_indices, :])
