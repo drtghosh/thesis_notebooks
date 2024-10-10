@@ -188,7 +188,7 @@ class AugmentedSUQ:
 
         return posterior_nlls.to(self.device)
 
-    def get_posterior_binary(self, x, y, labels, reg_const=10.0):
+    def get_posterior_binary(self, x, y, labels, reg_const=1.0):
         if self.count_labels:
             x = torch.cat((x, labels.unsqueeze(1).repeat(1, x.size(1), 1)), 2)
         else:
