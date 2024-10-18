@@ -21,7 +21,7 @@ from models import MLPGrow, PointNetEncoder
 # import multiprocessing
 
 
-class AugmentedSUQ:
+class AugmentedSUQDKL:
     """
     Class of Neural Shape Uncertainty Quantification conditioned on a given incomplete point cloud
     by minimizing the -ve log likelihood of the complete point cloud data estimate from the posterior
@@ -242,6 +242,8 @@ class AugmentedSUQ:
         optimizer = torch.optim.AdamW([
             {'params': self.encoder.parameters()},
             {'params': self.map_network.parameters()},
+            {'params': self.covar_module_conditioned.parameters()},
+            {'params': self.covar_after_mapping.parameters()},
             {'params': self.alpha}
         ], learning_rate, weight_decay=weight_decay)
         training_loss = 0
