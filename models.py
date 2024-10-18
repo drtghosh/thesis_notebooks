@@ -35,7 +35,7 @@ class MLPBlock(nn.Module):
         # pass input through first layer
         x = self.nonlinear_layer(self.layers[0](x))
         # pass through internal layers
-        for i in range(1, self.num_layers):
+        for i in range(1, self.num_layers+1):
             x = self.nonlinear_layer(self.layers[i](x))
         # pass through last layer to get output (no activation on the last layer)
         out = self.layers[self.num_layers+1](x)
@@ -288,19 +288,19 @@ class TNet(nn.Module):
 
 
 class PointNetEncoder(nn.Module):
+    """
+        PointNet encoder for point cloud data
+        Initialization Parameters:
+         - in_points: number of input points in the point cloud
+         - in_dim: dimension of the input point space
+         - shared_before: number of shared layers before feature transform
+         - feature_dim: dimension of the feature space
+         - shared_after: number of shared layers after feature transform
+         - multiplier: the factor by which the number of hidden nodes grows
+         - global_feature_dim: dimension of the encoding
+         - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
+    """
     def __init__(self, in_points, in_dim, shared_before, feature_dim, shared_after, multiplier, global_feature_dim, nonlinear_layer=nn.ReLU()):
-        """
-            PointNet encoder for point cloud data
-            Initialization Parameters:
-             - in_points: number of input points in the point cloud
-             - in_dim: dimension of the input point space
-             - shared_before: number of shared layers before feature transform
-             - feature_dim: dimension of the feature space
-             - shared_after: number of shared layers after feature transform
-             - multiplier: the factor by which the number of hidden nodes grows
-             - global_feature_dim: dimension of the encoding
-             - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
-        """
         super(PointNetEncoder, self).__init__()
         self.in_points = in_points
         self.in_dim = in_dim
@@ -355,3 +355,36 @@ class PointNetEncoder(nn.Module):
         # critical_indexes = critical_indexes.view(bs, -1)
 
         return global_features  # critical_indexes, t_feature
+
+
+class DeepGCN(nn.Module):
+    def __init__(self, h_nodes=64, num_layers=1, in_dim=1, num_kernels=1, nonlinear_layer=nn.ReLU()):
+        super(DeepGCN, self).__init__()
+        self.h_nodes = h_nodes
+        self.num_layers = num_layers
+        self.in_dim = in_dim
+        self.num_kernels = num_kernels
+        self.out_dim = in_dim * num_kernels
+        self.nonlinear_layer = nonlinear_layer
+
+        # creating the linear (fully connected) layers
+        self.layers = nn.ModuleList()
+        self.layers.append(nn.Linear(in_dim, h_nodes))
+        for i in range(num_layers):
+            self.layers.append(nn.Linear(h_nodes, h_nodes))
+        self.layers.append(nn.Linear(h_nodes, self.out_dim))
+
+        # initialize the weights
+        for i in range(len(self.layers)):
+            nn.init.xavier_uniform_(self.layers[i].weight)
+
+    def forward(self, x):
+        # pass input through first layer
+        x = self.nonlinear_layer(self.layers[0](x))
+        # pass through internal layers
+        for i in range(1, self.num_layers+1):
+            x = self.nonlinear_layer(self.layers[i](x))
+        # pass through last layer to get output (no activation on the last layer)
+        out = self.layers[self.num_layers+1](x)
+
+        return out.reshape(-1, self.num_kernels, self.in_dim)
