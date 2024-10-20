@@ -5,10 +5,11 @@ import numpy as np
 from models import DeepGCN, PointNetEncoder
 
 
-class DGCN:
+class ConditionalDGCN:
     """
     Class of Deep Gaussian Covariance Network intended to learn non-stationary hyperparameters
-    of a Gaussian Process using Deep Learning for a given labeled dataset
+    of a Gaussian Process using Deep Learning for a given labeled dataset conditioned on direction
+    (non-isotropic) and encoding of partially observed data/ points
     """
 
     def __init__(self, training_data=None, test_data=None, training_label=None, test_label=None, predict_noise=False,
