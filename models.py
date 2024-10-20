@@ -387,4 +387,4 @@ class DeepGCN(nn.Module):
         # pass through last layer to get output (no activation on the last layer)
         out = self.layers[self.num_layers+1](x)
 
-        return out.reshape(-1, self.num_kernels, self.in_dim)
+        return out.reshape(-1, self.in_dim, self.num_kernels)
