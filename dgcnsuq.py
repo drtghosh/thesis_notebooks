@@ -92,7 +92,7 @@ class DGCN:
                     y = train_y[(num_batches - 1) * batch_size:]
                 optimizer.zero_grad()
                 if use_posterior:
-                    output = -self.compute_posterior_batch(x, y, x, y)
+                    output = self.compute_posterior_batch(x, y, x, y)
                     print(output)
                 else:
                     output = -self.compute_log_marginal(x, y)
