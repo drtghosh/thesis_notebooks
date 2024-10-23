@@ -358,13 +358,14 @@ class PointNetEncoder(nn.Module):
 
 
 class DeepGCN(nn.Module):
-    def __init__(self, h_nodes=64, num_layers=1, in_dim=1, num_kernels=1, nonlinear_layer=nn.ReLU()):
+    def __init__(self, h_nodes=64, num_layers=1, data_dim=1, in_dim=1, num_kernels=1, nonlinear_layer=nn.ReLU()):
         super(DeepGCN, self).__init__()
         self.h_nodes = h_nodes
         self.num_layers = num_layers
+        self.data_dim = data_dim
         self.in_dim = in_dim
         self.num_kernels = num_kernels
-        self.out_dim = in_dim * num_kernels
+        self.out_dim = data_dim * num_kernels
         self.nonlinear_layer = nonlinear_layer
 
         # creating the linear (fully connected) layers
@@ -387,4 +388,4 @@ class DeepGCN(nn.Module):
         # pass through last layer to get output (no activation on the last layer)
         out = self.layers[self.num_layers+1](x)
 
-        return out.reshape(-1, self.in_dim, self.num_kernels)
+        return out.reshape(-1, self.data_dim, self.num_kernels)

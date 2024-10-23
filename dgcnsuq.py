@@ -38,7 +38,7 @@ class DGCN:
         self.device = torch.device("cuda" if use_cuda else "cpu")
 
         # initialize the Deep GCN network
-        self.kernel_net = DeepGCN(32, 2, self.space_dim, 3)
+        self.kernel_net = DeepGCN(32, 2, self.space_dim, self.space_dim, 3)
         self.kernel_net.to(self.device)
 
     def compute_kernel(self, x):
