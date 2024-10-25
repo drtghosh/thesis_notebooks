@@ -16,7 +16,7 @@ def compute_log_likelihood(data, label, mean, variance):
     return log_likelihood
 
 
-class ConditionalDGCN:
+class DirectedDGCN:
     """
     Class of Deep Gaussian Covariance Network intended to learn non-stationary hyperparameters
     of a Gaussian Process using Deep Learning for a given labeled dataset conditioned on direction
@@ -50,12 +50,8 @@ class ConditionalDGCN:
         self.device = torch.device("cuda" if use_cuda else "cpu")
 
         # initialize the Deep GCN network
-        self.kernel_net = DeepGCN(32, 2, self.space_dim, 2 * self.space_dim + latent_dim, num_kernels)
+        self.kernel_net = DeepGCN(32, 2, self.space_dim, 2 * self.space_dim, num_kernels)
         self.kernel_net.to(self.device)
-
-        # initialize the encoder network
-        self.encoder = PointNetEncoder(self.partial_data.size(1), self.space_dim, 2, 64, 3, 2, self.latent_dim)
-        self.encoder.to(self.device)
 
     def create_conditional_data_training(self):
         training_partial = self.partial_data.unsqueeze(2).expand(-1, -1, self.k, -1)
@@ -165,17 +161,6 @@ class ConditionalDGCN:
         partial = self.partial_data.to(self.device)
         remaining_pos = self.remaining_data_pos.to(self.device)
         remaining_neg = self.remaining_data_neg.to(self.device)
-        # compute encoding
-        encoding = self.encoder(partial.transpose(1, 2))
-        # repeat encoding for each point in partial data
-        directed_partial = torch.cat((directed_partial, encoding.unsqueeze(1).repeat(1, directed_partial.size(1), 1)),
-                                     2)
-        directed_remaining_pos = torch.cat(
-            (directed_remaining_pos, encoding.unsqueeze(1).repeat(1, directed_remaining_pos.size(1), 1)),
-            2)
-        directed_remaining_neg = torch.cat(
-            (directed_remaining_neg, encoding.unsqueeze(1).repeat(1, directed_remaining_neg.size(1), 1)),
-            2)
         bs = partial.size(0)
         posterior_loss = torch.empty(bs).to(self.device)
         for i in range(bs):
@@ -204,17 +189,15 @@ class ConditionalDGCN:
             log_likelihood_pos = compute_log_likelihood(remaining_pos_x, 0, posterior_mean_pos, posterior_var_pos)
             posterior_mean_neg = covar_matrix_rp_neg @ covar_inverse @ partial_y
             posterior_var_neg = covar_matrix_remaining_neg - covar_matrix_rp_neg @ covar_inverse @ covar_matrix_rp_neg.T
-            log_likelihood_neg = compute_log_likelihood(remaining_neg_x, 1, posterior_mean_neg, posterior_var_neg)
+            log_likelihood_neg = compute_log_likelihood(remaining_neg_x, 0, posterior_mean_neg, posterior_var_neg)
             loss_entropy = - (
                 (fn.softmax(covar_matrix_partial, dim=1) * fn.log_softmax(covar_matrix_partial, dim=1)).sum(
                     dim=1)).mean()
-            log_likelihood_partial = compute_log_likelihood(partial_x, partial_y, 0, covar_with_noise)
-            posterior_loss[i] = -log_likelihood_partial - 0.1 * (log_likelihood_pos + log_likelihood_neg) + loss_entropy
+            posterior_loss[i] = -log_likelihood_pos + log_likelihood_neg + loss_entropy
         return posterior_loss
 
     def train_kernel(self, num_epochs=20, learning_rate=0.001, weight_decay=1e-5, print_every=2):
         optimizer = torch.optim.AdamW([
-            {'params': self.encoder.parameters()},
             {'params': self.kernel_net.parameters()}
         ], learning_rate, weight_decay=weight_decay)
         for n in range(num_epochs):
@@ -230,14 +213,6 @@ class ConditionalDGCN:
         test_grid_repeated, directed_partial, directed_full, labels_test = self.create_conditional_data_test()
         test = self.test_data.to(self.device)
         full = test_grid_repeated.to(self.device)
-        # compute encoding
-        encoding = self.encoder(test.transpose(1, 2))
-        # repeat encoding for each point in partial data
-        directed_partial = torch.cat((directed_partial, encoding.unsqueeze(1).repeat(1, directed_partial.size(1), 1)),
-                                     2)
-        directed_full = torch.cat(
-            (directed_full, encoding.unsqueeze(1).repeat(1, directed_full.size(1), 1)),
-            2)
         bs = test.size(0)
         for i in range(bs):
             test_x = test[i]

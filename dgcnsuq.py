@@ -52,6 +52,7 @@ class DGCN:
         covar_matrix, reshaped_data = self.compute_kernel(x)
         noise = self.noise_variance * torch.eye(x.size(0)).to(self.device)
         covar_with_noise = covar_matrix + noise
+        print(torch.linalg.det(covar_with_noise))
         log_likelihood = compute_log_likelihood(x, y, 0, covar_with_noise)
         return log_likelihood
 
