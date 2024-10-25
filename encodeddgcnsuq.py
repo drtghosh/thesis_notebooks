@@ -11,12 +11,12 @@ from models import DeepGCN, PointNetEncoder
 def compute_log_likelihood(data, label, mean, variance):
     dist_term = -0.5 * (label - mean).T @ torch.linalg.inv(variance) @ (label - mean)
     det_term = -0.5 * torch.log(torch.linalg.det(variance) + 1e-6)
-    const_term = -0.5 * data.size(0) * torch.log(2 * torch.tensor(torch.pi))
-    log_likelihood = dist_term + det_term # + const_term
+    # const_term = -0.5 * data.size(0) * torch.log(2 * torch.tensor(torch.pi))
+    log_likelihood = dist_term + det_term  # + const_term
     return log_likelihood
 
 
-class ConditionalDGCN:
+class EncodedDGCN:
     """
     Class of Deep Gaussian Covariance Network intended to learn non-stationary hyperparameters
     of a Gaussian Process using Deep Learning for a given labeled dataset conditioned on direction
@@ -25,7 +25,7 @@ class ConditionalDGCN:
 
     def __init__(self, partial_data=None, remaining_data_pos=None, remaining_data_neg=None, test_data=None,
                  training_label=None, test_label=None, predict_noise=False, num_kernels=1, noise_variance=0.01,
-                 latent_dim=64, grid_size=100, k=5):
+                 latent_dim=64, grid_size=100):
         assert partial_data is not None
         assert remaining_data_pos is not None
         assert remaining_data_neg is not None
@@ -43,8 +43,8 @@ class ConditionalDGCN:
         self.noise_variance = noise_variance
         self.latent_dim = latent_dim
         self.grid_sizes = np.ones(self.space_dim, dtype=np.int32) * grid_size
-        self.k = k
         self.labels_partial = self.noise_variance * torch.randn(self.partial_data.size()[:-1])
+        self.labels_test = self.noise_variance * torch.randn(self.test_data.size()[:-1])
 
         # set device
         use_cuda = torch.cuda.is_available()
@@ -59,9 +59,7 @@ class ConditionalDGCN:
         self.encoder.to(self.device)
 
     def compute_kernel(self, conditioned_x, x):
-        scale_matrix_k = self.kernel_net(conditioned_x)
-        scale_matrix = scale_matrix_k.reshape(x.size(0), self.k, scale_matrix_k.size(1), scale_matrix_k.size(2)).mean(
-            dim=1)
+        scale_matrix = self.kernel_net(conditioned_x)
         scaled_data = scale_matrix * x[..., None]
         reshaped_data = torch.permute(scaled_data, (2, 0, 1))
         kernel_matrix = torch.exp(-0.5 * torch.cdist(reshaped_data, reshaped_data)).mean(dim=0)
@@ -82,9 +80,9 @@ class ConditionalDGCN:
         # compute encoding
         encoding = self.encoder(partial.transpose(1, 2))
         # repeat encoding for each point in partial data
-        partial = torch.cat((partial, encoding.unsqueeze(1).repeat(1, partial.size(1), 1)),2)
-        remaining_pos = torch.cat((remaining_pos, encoding.unsqueeze(1).repeat(1, remaining_pos.size(1), 1)),2)
-        remaining_neg = torch.cat((remaining_neg, encoding.unsqueeze(1).repeat(1, remaining_neg.size(1), 1)),2)
+        encoded_partial = torch.cat((partial, encoding.unsqueeze(1).repeat(1, partial.size(1), 1)), 2)
+        encoded_remaining_pos = torch.cat((remaining_pos, encoding.unsqueeze(1).repeat(1, remaining_pos.size(1), 1)), 2)
+        encoded_remaining_neg = torch.cat((remaining_neg, encoding.unsqueeze(1).repeat(1, remaining_neg.size(1), 1)), 2)
         bs = partial.size(0)
         posterior_loss = torch.empty(bs).to(self.device)
         for i in range(bs):
@@ -92,6 +90,9 @@ class ConditionalDGCN:
             remaining_pos_x = remaining_pos[i]
             remaining_neg_x = remaining_neg[i]
             partial_y = labels[i]
+            conditioned_partial_x = encoded_partial[i]
+            conditioned_remaining_pos_x = encoded_remaining_pos[i]
+            conditioned_remaining_neg_x = encoded_remaining_neg[i]
             covar_matrix_partial, reshaped_data_partial = self.compute_kernel(conditioned_partial_x, partial_x)
             covar_matrix_remaining_pos, reshaped_data_remaining_pos = self.compute_kernel(conditioned_remaining_pos_x,
                                                                                           remaining_pos_x)
@@ -99,11 +100,10 @@ class ConditionalDGCN:
                                                                                           remaining_neg_x)
             noise = self.noise_variance * torch.eye(covar_matrix_partial.size(0)).to(self.device)
             covar_with_noise = covar_matrix_partial + noise
-            covar_matrix_rp_pos = torch.exp(-0.5 * torch.cdist(reshaped_data_remaining_pos, reshaped_data_partial)).mean(
-                dim=0)
+            covar_matrix_rp_pos = torch.exp(
+                -0.5 * torch.cdist(reshaped_data_remaining_pos, reshaped_data_partial)).mean(dim=0)
             covar_matrix_rp_neg = torch.exp(
-                -0.5 * torch.cdist(reshaped_data_remaining_neg, reshaped_data_partial)).mean(
-                dim=0)
+                -0.5 * torch.cdist(reshaped_data_remaining_neg, reshaped_data_partial)).mean(dim=0)
             covar_inverse = torch.linalg.inv(covar_with_noise)
             posterior_mean_pos = covar_matrix_rp_pos @ covar_inverse @ partial_y
             posterior_var_pos = covar_matrix_remaining_pos - covar_matrix_rp_pos @ covar_inverse @ covar_matrix_rp_pos.T
@@ -132,26 +132,27 @@ class ConditionalDGCN:
                 print(f"Epoch:{n}, Loss: {training_loss}")
 
     def predict(self):
-        test_grid_repeated, directed_partial, directed_full, labels_test = self.create_conditional_data_test()
         test = self.test_data.to(self.device)
+        labels_test = self.labels_test.to(self.device)
+        test_grid = self.create_grid()
+        test_grid_repeated = test_grid.repeat(self.test_data.size(0), 1, 1).to(self.device)
         full = test_grid_repeated.to(self.device)
         # compute encoding
         encoding = self.encoder(test.transpose(1, 2))
         # repeat encoding for each point in partial data
-        directed_partial = torch.cat((directed_partial, encoding.unsqueeze(1).repeat(1, directed_partial.size(1), 1)),
-                                     2)
-        directed_full = torch.cat(
-            (directed_full, encoding.unsqueeze(1).repeat(1, directed_full.size(1), 1)),
+        encoded_partial = torch.cat((test, encoding.unsqueeze(1).repeat(1, test.size(1), 1)), 2)
+        encoded_full = torch.cat(
+            (test_grid_repeated, encoding.unsqueeze(1).repeat(1, test_grid_repeated.size(1), 1)),
             2)
         bs = test.size(0)
         for i in range(bs):
             test_x = test[i]
             full_x = full[i]
             test_y = labels_test[i]
-            conditioned_test_x = directed_partial[i]
-            conditioned_full_x = directed_full[i]
+            conditioned_test_x = encoded_partial[i]
+            conditioned_full_x = encoded_full[i]
             covar_matrix_test, reshaped_data_test = self.compute_kernel(conditioned_test_x, test_x)
-            covar_matrix_full, reshaped_data_full= self.compute_kernel(conditioned_full_x, full_x)
+            covar_matrix_full, reshaped_data_full = self.compute_kernel(conditioned_full_x, full_x)
             noise = self.noise_variance * torch.eye(covar_matrix_test.size(0)).to(self.device)
             covar_with_noise = covar_matrix_test + noise
             covar_matrix_tf = torch.exp(-0.5 * torch.cdist(reshaped_data_full, reshaped_data_test)).mean(dim=0)
