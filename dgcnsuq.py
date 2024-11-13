@@ -38,10 +38,11 @@ class DGCN:
         self.device = torch.device("cuda" if use_cuda else "cpu")
 
         # initialize the Deep GCN network
-        self.kernel_net = DeepGCN(32, 2, self.space_dim, self.space_dim, 3)
+        self.kernel_net = DeepGCN(32, 2, self.space_dim, self.space_dim, num_kernels)
         self.kernel_net.to(self.device)
 
     def compute_kernel(self, x):
+        x = x.to(self.device)
         scale_matrix = self.kernel_net(x)
         scaled_data = scale_matrix * x[..., None]
         reshaped_data = torch.permute(scaled_data, (2, 0, 1))
@@ -52,11 +53,13 @@ class DGCN:
         covar_matrix, reshaped_data = self.compute_kernel(x)
         noise = self.noise_variance * torch.eye(x.size(0)).to(self.device)
         covar_with_noise = covar_matrix + noise
-        print(torch.linalg.det(covar_with_noise))
         log_likelihood = compute_log_likelihood(x, y, 0, covar_with_noise)
         return log_likelihood
 
     def compute_posterior_batch(self, train_x, train_y, test_x, test_y, evaluate=False):
+        train_x.to(self.device)
+        test_x.to(self.device)
+        test_y.to(self.device)
         covar_matrix_train, reshaped_data_train = self.compute_kernel(train_x)
         noise = self.noise_variance * torch.eye(train_x.size(0)).to(self.device)
         covar_with_noise = covar_matrix_train + noise

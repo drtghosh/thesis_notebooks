@@ -122,7 +122,7 @@ class CovNet(nn.Module):
         # pass input through first layer
         x = self.nonlinear_layer(self.layers[0](x))
         # pass through internal layers
-        for i in range(1, self.num_layers):
+        for i in range(1, self.num_layers+1):
             x = self.nonlinear_layer(self.layers[i](x))
         # pass through last layer to get output (no activation on the last layer)
         x = self.layers[self.num_layers + 1](x)
@@ -235,7 +235,9 @@ class TNet(nn.Module):
          - num_points: number of points in the input point cloud
          - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
     """
-    def __init__(self, in_dim=3, h_nodes=64, multiplier=2, shared_layers=3, linear_layers=3, num_points=1024, nonlinear_layer=nn.ReLU()):
+
+    def __init__(self, in_dim=3, h_nodes=64, multiplier=2, shared_layers=3, linear_layers=3, num_points=1024,
+                 nonlinear_layer=nn.ReLU()):
         super(TNet, self).__init__()
         self.in_dim = in_dim
         self.h_nodes = h_nodes
@@ -300,7 +302,9 @@ class PointNetEncoder(nn.Module):
          - global_feature_dim: dimension of the encoding
          - nonlinear_layer: non-linearity added to the network layers (e.g. ReLU, softmax, ...)
     """
-    def __init__(self, in_points, in_dim, shared_before, feature_dim, shared_after, multiplier, global_feature_dim, nonlinear_layer=nn.ReLU()):
+
+    def __init__(self, in_points, in_dim, shared_before, feature_dim, shared_after, multiplier, global_feature_dim,
+                 nonlinear_layer=nn.ReLU()):
         super(PointNetEncoder, self).__init__()
         self.in_points = in_points
         self.in_dim = in_dim

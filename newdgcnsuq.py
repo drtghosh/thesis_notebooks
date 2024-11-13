@@ -82,7 +82,7 @@ class DGCN:
         possible_batch = int(ps/subsample_size)
         posterior_loss = torch.empty(bs).to(self.device)
         for i in range(bs):
-            rand_batch = np.random.choice(np.arange(possible_batch + 2))
+            rand_batch = np.random.choice(np.arange(possible_batch + 1))
             if rand_batch < possible_batch:
                 subsample_indices = np.arange(rand_batch * subsample_size, (rand_batch + 1) * subsample_size)
             elif rand_batch > possible_batch:
@@ -99,7 +99,6 @@ class DGCN:
             covar_matrix_remaining_neg, reshaped_data_remaining_neg = self.compute_kernel(remaining_neg_x)
             noise = self.noise_variance * torch.eye(covar_matrix_partial.size(0)).to(self.device)
             covar_with_noise = covar_matrix_partial + noise
-            print(torch.linalg.det(covar_with_noise))
             covar_matrix_rp_pos = torch.exp(
                 -0.5 * torch.cdist(reshaped_data_remaining_pos, reshaped_data_partial)).mean(dim=0)
             covar_matrix_rp_neg = torch.exp(
@@ -138,6 +137,7 @@ class DGCN:
         test_grid_repeated = test_grid.repeat(self.test_data.size(0), 1, 1).to(self.device)
         full = test_grid_repeated.to(self.device)
         bs = test.size(0)
+        self.kernel_net.eval()
         for i in range(bs):
             test_x = test[i]
             full_x = full[i]
